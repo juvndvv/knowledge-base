@@ -487,4 +487,7 @@ sequenceDiagram
 - Microsoft, [Domain events: design and implementation](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation)
 - Cesar de la Torre (Microsoft), [Domain Events vs. Integration Events in DDD and microservices architectures (2017)](https://devblogs.microsoft.com/cesardelatorre/domain-events-vs-integration-events-in-domain-driven-design-and-microservices-architectures/)
 - Codeartify, [Domain Events Are Not Integration Events](https://codeartify.substack.com/p/domain-events-are-not-integration)
+- Milan Jovanović, [Domain Events vs Integration Events in .NET](https://milanjovanovic.tech/blog/domain-events-vs-integration-events) (handler de domain event que traduce y escribe en outbox)
+- Milan Jovanović, [Event-Driven Communication Between Modules in .NET](https://milanjovanovic.tech/blog/event-driven-communication-modules)
+- Cesar de la Torre (Microsoft), [Using Domain Events within a .NET Core Microservice (2017)](https://devblogs.microsoft.com/cesardelatorre/using-domain-events-within-a-net-core-microservice/)
 - Chris Richardson, [Pattern: Transactional outbox](https://microservices.io/patterns/data/transactional-outbox)
