@@ -2,14 +2,17 @@
 title: "Flujo táctico DDD: añadir un producto a un pedido (BC Compras)"
 topic: ddd
 subtopic: diseño-táctico
-tags: [ddd, flujo, caso-de-uso, comando, application-service, command-handler, agregado, aggregate-root, invariante, repository, domain-event, integration-event, outbox, bounded-context, compras, pedido, linea-de-pedido, snapshot, consistencia-eventual]
-aliases: [add item to order, add order line, AddOrderItem, purchase order, pedido de compra, línea de pedido, order line, command handler, use case, caso de uso añadir producto]
+tags: [ddd, flujo, caso-de-uso, comando, application-service, command-handler, agregado, aggregate-root, invariante, repository, domain-event, integration-event, outbox, bounded-context, compras, pedido, linea-de-pedido, snapshot, consistencia-eventual, cache-aside, replica-local, fallback]
+aliases: [add item to order, add order line, AddOrderItem, purchase order, pedido de compra, línea de pedido, order line, command handler, use case, caso de uso añadir producto, read-through, local replica fallback]
 sources:
   - Vernon, "Effective Aggregate Design, Part I" (2011) — https://dddcommunity.org/wp-content/uploads/files/pdf_articles/Vernon_2011_1.pdf
   - Vernon, "Effective Aggregate Design, Part II" (2011) — https://www.dddcommunity.org/wp-content/uploads/files/pdf_articles/Vernon_2011_2.pdf
   - Microsoft, "Implement a microservice domain model with .NET" — https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/net-core-microservice-domain-model
   - Microsoft, "Design a microservice domain model" — https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model
   - Arkency, "Application Services — 10 common doubts answered" — https://blog.arkency.com/application-service-ruby-rails-ddd/
+  - Microsoft, "Cache-Aside pattern" — https://learn.microsoft.com/en-us/azure/architecture/patterns/cache-aside
+  - Microsoft, "Communication in a microservice architecture" — https://learn.microsoft.com/en-us/dotnet/architecture/microservices/architect-microservice-container-applications/communication-in-microservice-architecture
+  - Koenighotze, "Dealing with data in microservice architectures, part 3: replication" — https://dev.to/koenighotze/dealing-with-data-in-microservice-architectures-part-3-replication-4h7b
   - Milan Jovanović, "Bounded Context in DDD Explained With Examples" — https://milanjovanovic.tech/blog/bounded-context-ddd-explained
 created: 2026-10-29
 ---
@@ -129,6 +132,50 @@ flowchart LR
     PC -- "B: PrecioProductoCambiado (evento)" --> REP
     REP --> ACL
 ```
+
+## Híbrido: primero réplica local, si no está, petición a Catálogo
+
+Sí se puede combinar A y B. Es el patrón **Cache-Aside** aplicado a la réplica. Microsoft lo describe así: *"If the item isn't in the cache, also known as a cache miss, the application retrieves the item from the data store"* y después *"adds the item to the cache"* ([Cache-Aside pattern](https://learn.microsoft.com/en-us/azure/architecture/patterns/cache-aside)). Todo queda dentro del adaptador de infraestructura, detrás del mismo puerto `CatalogoProveedores`, así que ni el handler ni `Pedido` cambian.
+
+```mermaid
+flowchart TD
+    H[Handler AñadirProductoAPedido] --> P{{Puerto CatalogoProveedores}}
+    P --> L{¿Está en la réplica local?}
+    L -- sí --> R[Devuelve ProductoComprable local]
+    L -- no --> HTTP[GET a Catálogo con timeout]
+    HTTP -- ok --> W[Guarda en réplica si la versión es más nueva] --> R2[Devuelve ProductoComprable]
+    HTTP -- error / caído --> E[ProductoNoDisponible: no se añade la línea]
+    EV[Integration events de Catálogo] --> REP[(Réplica local)]
+    W --> REP
+    L -.lee.-> REP
+```
+
+```ts
+// Infraestructura: misma interfaz, dos fuentes
+class CatalogoProveedoresHibrido implements CatalogoProveedores {
+  constructor(private replica: ReplicaProductos, private remoto: CatalogoProveedoresHttp) {}
+
+  async productoComprable(id: ProductoId, prov: ProveedorId) {
+    const local = await this.replica.buscar(id, prov);
+    if (local) return local.aProductoComprable();          // camino normal: sin red
+
+    const remoto = await this.remoto.productoComprableConVersion(id, prov); // fallback síncrono
+    if (!remoto) return null;
+    // Solo escribe si es más nuevo: los eventos y el fallback escriben en la misma tabla
+    await this.replica.guardarSiMasNuevo(remoto.producto, remoto.version);
+    return remoto.producto;
+  }
+}
+```
+
+Pegas (las dos primeras salen de las fuentes; el resto es análisis mío):
+
+- **El fallback solo cubre el *miss*, no el dato obsoleto.** Si la réplica tiene un precio viejo, no se llama a Catálogo. Microsoft: *"The Cache-Aside pattern doesn't guarantee consistency between the data store and the cache"*. El híbrido no da datos más frescos que B.
+- **Reintroduce el acoplamiento síncrono en los misses.** Microsoft recomienda *"If possible, never depend on synchronous communication (request/response) between multiple microservices, not even for queries"* y, en su lugar, *"replicate or propagate that data (only the attributes you need)"* ([Communication in a microservice architecture](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/architect-microservice-container-applications/communication-in-microservice-architecture)). Si Catálogo está caído y hay miss, falla igual que con A.
+- **Dos escritores en la réplica.** Los eventos y el fallback escriben en la misma tabla, así que hace falta una versión o un timestamp del upstream para no pisar un dato nuevo con uno viejo.
+- **Dos traducciones.** La ACL HTTP y el consumidor de eventos deben producir el mismo `ProductoComprable`. Lo mejor es centralizar el mapeo.
+
+Cuándo sí compensa: mientras la réplica se está cargando por primera vez (la carga inicial *"can take some time"*, [Koenighotze](https://dev.to/koenighotze/dealing-with-data-in-microservice-architectures-part-3-replication-4h7b)) o cuando un producto recién creado aún no ha llegado por eventos. Si los misses son frecuentes en régimen normal, el problema está en la replicación y el fallback lo esconde.
 
 ## Código (TypeScript)
 
