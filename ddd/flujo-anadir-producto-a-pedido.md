@@ -2,8 +2,8 @@
 title: "Flujo táctico DDD: añadir un producto a un pedido (BC Compras)"
 topic: ddd
 subtopic: diseño-táctico
-tags: [ddd, flujo, caso-de-uso, comando, application-service, command-handler, agregado, aggregate-root, invariante, repository, domain-event, integration-event, outbox, bounded-context, compras, pedido, linea-de-pedido, snapshot, consistencia-eventual, cache-aside, replica-local, fallback, inventario, stock, producto-inventariable, recepcion, stock-pendiente, reserva, disponible, idempotencia, proveedor, supplier, datos-maestros]
-aliases: [add item to order, add order line, AddOrderItem, purchase order, pedido de compra, línea de pedido, order line, command handler, use case, caso de uso añadir producto, read-through, local replica fallback, inventory, stock on hand, on order, incoming inventory, goods receipt, recepción de mercancía, stock reservation, available to promise, supplier, vendor, master data, proveedor bloqueado]
+tags: [ddd, flujo, caso-de-uso, comando, application-service, command-handler, agregado, aggregate-root, invariante, repository, domain-event, integration-event, outbox, bounded-context, compras, pedido, linea-de-pedido, snapshot, consistencia-eventual, cache-aside, replica-local, fallback, inventario, stock, producto-inventariable, recepcion, stock-pendiente, reserva, disponible, idempotencia, proveedor, supplier, datos-maestros, marketplace, multi-tenant, proveedor-externo, canal, email, ports-and-adapters]
+aliases: [add item to order, add order line, AddOrderItem, purchase order, pedido de compra, línea de pedido, order line, command handler, use case, caso de uso añadir producto, read-through, local replica fallback, inventory, stock on hand, on order, incoming inventory, goods receipt, recepción de mercancía, stock reservation, available to promise, supplier, vendor, master data, proveedor bloqueado, B2B marketplace, external supplier, guest supplier, tenant, notification port]
 sources:
   - Vernon, "Effective Aggregate Design, Part I" (2011) — https://dddcommunity.org/wp-content/uploads/files/pdf_articles/Vernon_2011_1.pdf
   - Vernon, "Effective Aggregate Design, Part II" (2011) — https://www.dddcommunity.org/wp-content/uploads/files/pdf_articles/Vernon_2011_2.pdf
@@ -19,6 +19,8 @@ sources:
   - ABP, "Modular CRM part 7: communication via messages" — https://abp.io/docs/latest/tutorials/modular-crm/part-07
   - Fowler, bliki "BoundedContext" — https://martinfowler.com/bliki/BoundedContext.html
   - "Modeling Shared Entities Across Bounded Contexts in DDD" (dev.to, AWS Builders) — https://dev.to/aws-builders/modeling-shared-entities-across-bounded-contexts-in-domain-driven-design-5hih
+  - OrderCloud, "Building blocks" — https://ordercloud.io/learn/ordercloud-basics/building-blocks
+  - Herberto Graça, "Ports & Adapters Architecture" (sobre Cockburn) — https://herbertograca.com/2017/09/14/ports-adapters-architecture/
   - Milan Jovanović, "Bounded Context in DDD Explained With Examples" — https://milanjovanovic.tech/blog/bounded-context-ddd-explained
 created: 2026-10-29
 ---
@@ -292,6 +294,96 @@ class AlBloquearProveedor {
   }
 }
 ```
+
+## Caso marketplace: clientes y proveedores en la plataforma + externos por email
+
+Escenario: el ERP es un marketplace B2B entre clientes y proveedores. Cada cliente puede dar de alta proveedores **externos** que no tienen cuenta y se comunican por email, y cada proveedor puede hacer lo mismo con clientes externos.
+
+Referencias:
+- OrderCloud modela un *Marketplace* como contenedor superior (*"data is not meant to be shared between multiple Marketplaces"*). Compradores y proveedores son *Companies*, *"unique entities within OrderCloud that transact and manage relationships with one another"* ([OrderCloud, Building blocks](https://ordercloud.io/learn/ordercloud-basics/building-blocks)).
+- Ports & adapters (Cockburn, citado por [Herberto Graça](https://herbertograca.com/2017/09/14/ports-adapters-architecture/)): *"The application should have no knowledge of who/what is sending input or receiving its output"*. Para un puerto de email: *"the interface method signatures should be created according to what the Application Core needs"*.
+
+### Modelo propuesto (decisiones mías sobre esas bases)
+
+1. **Organizaciones (o Directorio)** es un BC aparte: empresas registradas en la plataforma, sus usuarios y sus permisos. No sabe nada de pedidos.
+2. En **Compras**, el proveedor es la **relación del cliente con ese proveedor** y no la empresa en sí. Cada cliente tiene su agenda: `ProveedorDeCliente(clienteOrgId, id, condiciones, canal)`. El mismo proveedor real puede figurar en las agendas de muchos clientes con condiciones distintas. Así que sí: la agenda de proveedores vive en Compras.
+3. El **canal** es un value object: `Plataforma(proveedorOrgId)` o `Email(dirección)`. Un externo solo existe en la agenda del cliente que lo creó.
+4. **Un pedido, dos agregados.** El cliente tiene su `PedidoCompra` en Compras. Si el proveedor está en la plataforma, tiene su `PedidoVenta` en su BC Ventas, con su propio ciclo de vida y vinculado por id. No se comparte un único `Pedido` entre dos organizaciones (polisemia, Fowler).
+5. **`Pedido` no conoce el canal.** `añadirLinea` es igual en los dos casos. El canal solo importa al **enviar**.
+
+```mermaid
+flowchart TB
+    subgraph ORG["BC Organizaciones"]
+        O1[Organización cliente]
+        O2[Organización proveedor]
+    end
+    subgraph COM["BC Compras (por cliente)"]
+        AG["ProveedorDeCliente<br/>canal: Plataforma | Email"]
+        PC[PedidoCompra]
+    end
+    subgraph VEN["BC Ventas (por proveedor)"]
+        PV[PedidoVenta]
+    end
+    EXT["Proveedor externo<br/>(solo email)"]
+
+    PC -- proveedorId --> AG
+    PC -- "PedidoCompraEnviado" --> D{canal}
+    D -- "Plataforma → integration event" --> PV
+    D -- "Email → puerto NotificadorExterno" --> EXT
+    EXT -- "enlace con token: confirmar / rechazar" --> PC
+    PV -- "PedidoVentaConfirmado" --> PC
+    O2 -. "OrganizacionRegistrada: vincular externo con el mismo email" .-> AG
+```
+
+```ts
+// Compras: canal como value object (unión discriminada)
+type CanalProveedor =
+  | { tipo: "PLATAFORMA"; proveedorOrgId: OrgId }
+  | { tipo: "EMAIL"; email: Email };
+
+class ProveedorDeCliente extends AggregateRoot {
+  constructor(readonly id: ProveedorId, readonly clienteOrgId: OrgId,
+              readonly nombre: string, private canal: CanalProveedor) { super(); }
+  get canalActual() { return this.canal; }
+  // Cuando el externo se registra en la plataforma, se vincula sin perder el historial
+  vincularAOrganizacion(orgId: OrgId) {
+    if (this.canal.tipo === "PLATAFORMA") return;
+    this.canal = { tipo: "PLATAFORMA", proveedorOrgId: orgId };
+    this.registrar(new ProveedorVinculadoAPlataforma(this.id, orgId));
+  }
+}
+
+// Puerto de salida: lo que necesita Compras, no lo que ofrece SMTP/SendGrid
+interface NotificadorProveedorExterno {
+  enviarPedido(destino: Email, pedido: ResumenPedido, enlaceRespuesta: URL): Promise<void>;
+}
+
+// Aplicación: reacciona a PedidoCompraEnviado y elige el canal
+class EntregarPedidoAlProveedor {
+  constructor(private proveedores: ProveedorDeClienteRepository,
+              private outbox: Outbox,
+              private notificador: NotificadorProveedorExterno,
+              private tokens: TokensRespuesta) {}
+
+  async handle(e: PedidoCompraEnviado) {
+    const prov = await this.proveedores.porId(e.proveedorId);
+    const canal = prov.canalActual;
+    if (canal.tipo === "PLATAFORMA") {
+      // Ventas del proveedor crea su PedidoVenta (idempotente por pedidoCompraId)
+      await this.outbox.añadir(new PedidoCompraRecibidoIntegrationEvent(
+        e.pedidoId, e.clienteOrgId, canal.proveedorOrgId, e.lineas));
+    } else {
+      const enlace = await this.tokens.emitir(e.pedidoId, canal.email); // confirmar/rechazar sin cuenta
+      await this.notificador.enviarPedido(canal.email, e.resumen, enlace);
+    }
+  }
+}
+```
+
+Implicaciones para el flujo de "añadir producto":
+- **Catálogo:** con un proveedor de la plataforma, `ProductoComprable` sale de su catálogo publicado (réplica o ACL, como antes). Con un externo no hay catálogo, así que el cliente crea **productos propios** en su agenda (referencia, descripción y precio acordado). El puerto `CatalogoProveedores` tiene entonces dos implementaciones según el canal.
+- **Inventario:** no cambia. El stock del cliente sube al recibir la mercancía, sea cual sea el canal.
+- **Respuestas del externo:** un enlace con token de un solo uso es más robusto que interpretar respuestas de email. Las fuentes no lo cubren; es una recomendación mía.
 
 ## Código (TypeScript)
 
