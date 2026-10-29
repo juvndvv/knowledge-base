@@ -2,8 +2,8 @@
 title: "Flujo táctico DDD: añadir un producto a un pedido (BC Compras)"
 topic: ddd
 subtopic: diseño-táctico
-tags: [ddd, flujo, caso-de-uso, comando, application-service, command-handler, agregado, aggregate-root, invariante, repository, domain-event, integration-event, outbox, bounded-context, compras, pedido, linea-de-pedido, snapshot, consistencia-eventual, cache-aside, replica-local, fallback, inventario, stock, producto-inventariable, recepcion, stock-pendiente, reserva, disponible, idempotencia]
-aliases: [add item to order, add order line, AddOrderItem, purchase order, pedido de compra, línea de pedido, order line, command handler, use case, caso de uso añadir producto, read-through, local replica fallback, inventory, stock on hand, on order, incoming inventory, goods receipt, recepción de mercancía, stock reservation, available to promise]
+tags: [ddd, flujo, caso-de-uso, comando, application-service, command-handler, agregado, aggregate-root, invariante, repository, domain-event, integration-event, outbox, bounded-context, compras, pedido, linea-de-pedido, snapshot, consistencia-eventual, cache-aside, replica-local, fallback, inventario, stock, producto-inventariable, recepcion, stock-pendiente, reserva, disponible, idempotencia, proveedor, supplier, datos-maestros]
+aliases: [add item to order, add order line, AddOrderItem, purchase order, pedido de compra, línea de pedido, order line, command handler, use case, caso de uso añadir producto, read-through, local replica fallback, inventory, stock on hand, on order, incoming inventory, goods receipt, recepción de mercancía, stock reservation, available to promise, supplier, vendor, master data, proveedor bloqueado]
 sources:
   - Vernon, "Effective Aggregate Design, Part I" (2011) — https://dddcommunity.org/wp-content/uploads/files/pdf_articles/Vernon_2011_1.pdf
   - Vernon, "Effective Aggregate Design, Part II" (2011) — https://www.dddcommunity.org/wp-content/uploads/files/pdf_articles/Vernon_2011_2.pdf
@@ -17,6 +17,8 @@ sources:
   - Oracle JD Edwards, "Item Availability" — https://docs.oracle.com/en/applications/jd-edwards/supply-chain-manufacturing/9.2/eoaim/item-availability.html
   - Salesforce Engineering, "Event Sourcing for an Inventory Availability Solution" — https://engineering.salesforce.com/event-sourcing-for-an-inventory-availability-solution-3cc0daf5a742
   - ABP, "Modular CRM part 7: communication via messages" — https://abp.io/docs/latest/tutorials/modular-crm/part-07
+  - Fowler, bliki "BoundedContext" — https://martinfowler.com/bliki/BoundedContext.html
+  - "Modeling Shared Entities Across Bounded Contexts in DDD" (dev.to, AWS Builders) — https://dev.to/aws-builders/modeling-shared-entities-across-bounded-contexts-in-domain-driven-design-5hih
   - Milan Jovanović, "Bounded Context in DDD Explained With Examples" — https://milanjovanovic.tech/blog/bounded-context-ddd-explained
 created: 2026-10-29
 ---
@@ -247,7 +249,51 @@ flowchart LR
 | `MercanciaRecibida` | Integration | Inventario | Compras marca líneas recibidas |
 | `StockIncrementado` / `StockActualizado` | Domain (+ integration si Ventas lo necesita) | `StockArticulo` | Proyecciones de disponibilidad |
 
-### Código (TypeScript)
+### ¿Dónde vive el Proveedor? ¿Dentro de Compras?
+
+Depende de cuánto modelo tenga el proveedor fuera de la compra. Las fuentes no dan una regla para proveedores en concreto, pero sí el principio:
+
+- El mismo término puede tener modelos distintos según el contexto. Fowler: *"Different contexts may have completely different models of common concepts"*, con *"mechanisms to map between these polysemic concepts for integration"* ([BoundedContext](https://martinfowler.com/bliki/BoundedContext.html)).
+- Patrón análogo en eShopOnContainers: el `User` de Identity se replica en Ordering como `Buyer`, que *"shares the same identity with the original User entity, but it might have only the few attributes needed by the Ordering domain"* ([Microsoft](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/architect-microservice-container-applications/communication-in-microservice-architecture)).
+- No conviene compartir una entidad única entre contextos: *"Synchronize data through events, not shared objects"* ([dev.to, Modeling shared entities](https://dev.to/aws-builders/modeling-shared-entities-across-bounded-contexts-in-domain-driven-design-5hih)).
+
+Dos opciones (criterio mío, apoyado en lo anterior):
+
+| Opción | Cuándo | Cómo |
+|---|---|---|
+| **Proveedor como agregado dentro de Compras** | El proveedor solo importa para comprar (nombre, condiciones, activo/bloqueado) | Agregado `Proveedor` con su repositorio en Compras; `Pedido` lo referencia por `proveedorId` |
+| **BC Proveedores (o datos maestros) upstream** | Hay alta y homologación, datos fiscales y bancarios, evaluación, y lo usan también Contabilidad o Pagos | Proveedores es dueño del ciclo de vida y publica `ProveedorAlta`, `ProveedorBloqueado`…; Compras guarda su propio `ProveedorCompras` con el mismo id y solo lo que necesita (moneda, pedido mínimo, plazo de entrega, activo) |
+
+En ambos casos `Pedido` guarda **solo `proveedorId`** (Vernon Part II), y reglas como "no se puede pedir a un proveedor bloqueado" se resuelven en el handler antes de llamar al agregado, igual que con `ProductoComprable`.
+
+```mermaid
+flowchart LR
+    PROV["BC Proveedores<br/>Proveedor: CIF, IBAN, homologación, evaluación"] -- "ProveedorAlta / ProveedorBloqueado" --> COM["BC Compras<br/>ProveedorCompras: id, moneda, pedidoMínimo, activo<br/>Pedido(proveedorId)"]
+    PROV -- "datos fiscales y bancarios" --> CONT["BC Contabilidad / Pagos"]
+    CAT["BC Catálogo"] -- "ProductoComprable" --> COM
+```
+
+```ts
+// Compras: su propio modelo del proveedor (mismo id que en Proveedores)
+class ProveedorCompras {
+  constructor(readonly id: ProveedorId, readonly moneda: Moneda,
+              readonly pedidoMinimo: Dinero, private activo: boolean) {}
+  puedeRecibirPedidos() { return this.activo; }
+  bloquear() { this.activo = false; }
+}
+
+// Handler en Compras que consume el evento de integración de Proveedores
+class AlBloquearProveedor {
+  constructor(private proveedores: ProveedorComprasRepository) {}
+  async handle(e: ProveedorBloqueadoIntegrationEvent) {
+    const p = await this.proveedores.porId(e.proveedorId);
+    p?.bloquear();
+    if (p) await this.proveedores.guardar(p);
+  }
+}
+```
+
+## Código (TypeScript)
 
 ```ts
 // ---------- BC Inventario ----------
