@@ -3,7 +3,7 @@ title: "Unidades de medida: compra, stock y cocina (receta) entre bounded contex
 topic: ddd
 subtopic: diseño-táctico
 tags: [ddd, value-object, cantidad, quantity, unidad-de-medida, uom, conversion, unidad-de-compra, unidad-de-stock, unidad-de-receta, escandallo, receta, cocina, compras, inventario, restauracion, marketplace]
-aliases: [unit of measure, UoM, purchase UoM, stock UoM, base unit, recipe unit, conversion factor, Quantity pattern, Conversion Ratio, formato de compra, pack size, case, caja, botella, escandallo]
+aliases: [unit of measure, UoM, purchase UoM, stock UoM, base unit, recipe unit, conversion factor, Quantity pattern, Conversion Ratio, formato de compra, pack size, case, caja, botella, escandallo, litros, densidad, cadena de conversión]
 sources:
   - Fowler, "Analysis Patterns", cap. 3 (diagramas Quantity y Unit Conversion Ratio) — https://www.martinfowler.com/apsupp/apchap3.pdf
   - Mosaic / Resto iQ, "Guide to stock, recipe and purchasing unit conversions" — https://support.mosaic-solutions.com/knowledge/guide-to-stock-recipe-and-purchasing-unit-conversions
@@ -127,6 +127,49 @@ class StockArticulo {
   }
 }
 ```
+
+## Caso: la cocina usa litros y el stock está en otra unidad
+
+Restaurant365 define cada unidad a partir de otra equivalente y usa *"that chain to calculate conversions"*, reduciendo todo a un tipo de medida: volumen, peso o unidades ([Restaurant365](https://docs.restaurant365.com/docs/unit-of-measure)). Por eso la receta puede guardar **cualquier unidad**, y la conversión a stock se resuelve encadenando factores (la implementación es mía):
+
+| Stock en | Cocina en | Cadena | ¿Qué hace falta? |
+|---|---|---|---|
+| botella (750 ml) | l | l → ml (física) → botella (artículo) | Nada nuevo: 0,3 l = 300 ml = 0,4 botellas |
+| l | l | identidad | Nada |
+| kg (p. ej. aceite, nata) | l | l → kg cruza **volumen → peso** | Una **densidad del artículo** (p. ej. 1 l = 0,92 kg). Sin ella la conversión debe fallar, nunca suponer 1 l = 1 kg |
+| ud (huevo) | g | ud → g cruza **unidad → peso** | Equivalencia del artículo (1 ud ≈ 60 g) |
+
+```mermaid
+flowchart LR
+    L["0,3 l (receta)"] -- "física ×1000" --> ML["300 ml"]
+    ML -- "artículo: 1 botella = 750 ml" --> B["0,4 botellas (stock)"]
+    L2["0,3 l aceite (receta)"] -- "artículo: densidad 0,92 kg/l" --> KG["0,276 kg (stock)"]
+```
+
+```ts
+// Inventario: resuelve la cadena física + equivalencias del artículo
+class EquivalenciasArticulo {
+  constructor(private unidadStock: Unidad,
+              private propias: FactorConversion[],          // botella→ml, l→kg (densidad), ud→g
+              private fisicas: ConversionesFisicas) {}      // librería compartida: l↔ml, kg↔g
+
+  aUnidadStock(c: Cantidad): Cantidad {
+    if (c.unidad.codigo === this.unidadStock.codigo) return c;
+    // 1) mismo tipo de medida: solo conversión física (l → ml)
+    if (c.unidad.tipo === this.unidadStock.tipo && this.fisicas.existe(c.unidad, this.unidadStock))
+      return this.fisicas.convertir(c, this.unidadStock);
+    // 2) pasar por una equivalencia del artículo (ml → botella, l → kg)
+    for (const f of this.propias) {
+      const origen = this.fisicas.existe(c.unidad, f.desde) ? this.fisicas.convertir(c, f.desde) : null;
+      if (origen) return this.fisicas.convertir(f.convertir(origen), this.unidadStock);
+      // también en sentido inverso: botella = 750 ml ⇒ ml → botella = 1/750
+    }
+    throw new ConversionNoDefinida(c.unidad, this.unidadStock); // p. ej. l → kg sin densidad
+  }
+}
+```
+
+Regla de modelado: al **guardar la receta**, Cocina debe comprobar que su unidad se puede convertir a la unidad de stock del artículo, por ejemplo con una consulta a Inventario o una réplica de las equivalencias. Así el error sale al crear el escandallo y no al vender el plato.
 
 ## Errores frecuentes
 
