@@ -2,8 +2,8 @@
 title: "Flujo táctico DDD: añadir un producto a un pedido (BC Compras)"
 topic: ddd
 subtopic: diseño-táctico
-tags: [ddd, flujo, caso-de-uso, comando, application-service, command-handler, agregado, aggregate-root, invariante, repository, domain-event, integration-event, outbox, bounded-context, compras, pedido, linea-de-pedido, snapshot, consistencia-eventual, cache-aside, replica-local, fallback]
-aliases: [add item to order, add order line, AddOrderItem, purchase order, pedido de compra, línea de pedido, order line, command handler, use case, caso de uso añadir producto, read-through, local replica fallback]
+tags: [ddd, flujo, caso-de-uso, comando, application-service, command-handler, agregado, aggregate-root, invariante, repository, domain-event, integration-event, outbox, bounded-context, compras, pedido, linea-de-pedido, snapshot, consistencia-eventual, cache-aside, replica-local, fallback, inventario, stock, producto-inventariable, recepcion, stock-pendiente, reserva, disponible, idempotencia]
+aliases: [add item to order, add order line, AddOrderItem, purchase order, pedido de compra, línea de pedido, order line, command handler, use case, caso de uso añadir producto, read-through, local replica fallback, inventory, stock on hand, on order, incoming inventory, goods receipt, recepción de mercancía, stock reservation, available to promise]
 sources:
   - Vernon, "Effective Aggregate Design, Part I" (2011) — https://dddcommunity.org/wp-content/uploads/files/pdf_articles/Vernon_2011_1.pdf
   - Vernon, "Effective Aggregate Design, Part II" (2011) — https://www.dddcommunity.org/wp-content/uploads/files/pdf_articles/Vernon_2011_2.pdf
@@ -13,6 +13,10 @@ sources:
   - Microsoft, "Cache-Aside pattern" — https://learn.microsoft.com/en-us/azure/architecture/patterns/cache-aside
   - Microsoft, "Communication in a microservice architecture" — https://learn.microsoft.com/en-us/dotnet/architecture/microservices/architect-microservice-container-applications/communication-in-microservice-architecture
   - Koenighotze, "Dealing with data in microservice architectures, part 3: replication" — https://dev.to/koenighotze/dealing-with-data-in-microservice-architectures-part-3-replication-4h7b
+  - SKU.io, "Receive stock against a PO" — https://docs.sku.io/guides/orders/purchase-orders/receive-stock-against-a-po
+  - Oracle JD Edwards, "Item Availability" — https://docs.oracle.com/en/applications/jd-edwards/supply-chain-manufacturing/9.2/eoaim/item-availability.html
+  - Salesforce Engineering, "Event Sourcing for an Inventory Availability Solution" — https://engineering.salesforce.com/event-sourcing-for-an-inventory-availability-solution-3cc0daf5a742
+  - ABP, "Modular CRM part 7: communication via messages" — https://abp.io/docs/latest/tutorials/modular-crm/part-07
   - Milan Jovanović, "Bounded Context in DDD Explained With Examples" — https://milanjovanovic.tech/blog/bounded-context-ddd-explained
 created: 2026-10-29
 ---
@@ -176,6 +180,135 @@ Pegas (las dos primeras salen de las fuentes; el resto es análisis mío):
 - **Dos traducciones.** La ACL HTTP y el consumidor de eventos deben producir el mismo `ProductoComprable`. Lo mejor es centralizar el mapeo.
 
 Cuándo sí compensa: mientras la réplica se está cargando por primera vez (la carga inicial *"can take some time"*, [Koenighotze](https://dev.to/koenighotze/dealing-with-data-in-microservice-architectures-part-3-replication-4h7b)) o cuando un producto recién creado aún no ha llegado por eventos. Si los misses son frecuentes en régimen normal, el problema está en la replicación y el fallback lo esconde.
+
+## Producto inventariable: qué cambia cuando hay stock
+
+Resumen: **añadir un producto inventariable al pedido de compra no toca el stock.** Lo que se pide es mercancía "en camino". SKU.io lo describe así: *"Until you receive it, ordered stock is only incoming inventory (units you expect but don't yet have)"*. El stock físico solo sube al recibir: *"Raises your on-hand inventory for those products"* ([SKU.io, Receive stock against a PO](https://docs.sku.io/guides/orders/purchase-orders/receive-stock-against-a-po)).
+
+### Quién es dueño del stock
+
+El stock pertenece a otro bounded context, **Inventario**, no a Compras ni a Catálogo. En el ejemplo de [Milan Jovanović](https://milanjovanovic.tech/blog/bounded-context-ddd-explained), `QuantityInStock` y `WarehouseLocation` están en el `Product` de Fulfillment, no en Ordering. En el tutorial modular de [ABP](https://abp.io/docs/latest/tutorials/modular-crm/part-07?UI=MVC), Ordering nunca toca `StockCount`. Publica `OrderPlacedEto` y el módulo dueño del producto lo descuenta en su handler.
+
+Granularidad del agregado: Salesforce modela el inventario como *"A quantity for a SKU at a particular location"*, con concurrencia optimista (*"use an optimistic concurrency approach to avoid row locking"*) ([Salesforce Engineering](https://engineering.salesforce.com/event-sourcing-for-an-inventory-availability-solution-3cc0daf5a742)). Así, el agregado `StockArticulo` se identifica por **(productoId, almacenId)** y es pequeño, como pide Vernon.
+
+Cantidades que maneja Inventario (vocabulario de JD Edwards, [Oracle](https://docs.oracle.com/en/applications/jd-edwards/supply-chain-manufacturing/9.2/eoaim/item-availability.html)):
+
+| Cantidad | Definición en la fuente | Quién la cambia |
+|---|---|---|
+| **Físico** (*on hand*) | *"units that are physically in stock"* | Recepciones, salidas, ajustes |
+| **Pendiente de recibir** (*on PO / incoming*) | *"units specified on the purchase order"* | Compras (aprobación del pedido) y recepción |
+| **Comprometido** (*committed*) | Cantidades *"committed to sales orders and work orders"* | Ventas / producción, **no Compras** |
+| **Disponible** | *"on-hand quantity minus commitments, reservations, and backorders"* | Calculado |
+
+Las **reservas** vienen del lado de la demanda (ventas, órdenes de trabajo), no de las compras. Un pedido de compra nunca "reserva" stock.
+
+### Qué cambia en Compras
+
+- La línea necesita un **almacén de destino** (el stock es por SKU y ubicación) y la **unidad de medida**. Que `ProductoComprable` indique `inventariable: boolean` y que las líneas inventariables exijan almacén son decisiones de modelado mías, no de las fuentes.
+- `Pedido` gana estados de recepción: SKU.io usa *"Partially received"* y cierra el pedido cuando todas las líneas están recibidas.
+- `añadirLinea` sigue siendo una operación **solo de Compras**: no consulta ni modifica Inventario.
+
+```mermaid
+sequenceDiagram
+    participant C as BC Compras (Pedido)
+    participant OB as Outbox
+    participant BUS as Broker
+    participant I as BC Inventario (StockArticulo)
+    participant A as Almacén (recepción física)
+
+    Note over C: añadirLinea(producto, cantidad, almacén)<br/>sin efecto en stock
+    C->>C: aprobar() → PedidoCompraAprobado (domain event)
+    C->>OB: PedidoCompraAprobadoIntegrationEvent
+    OB->>BUS: publica
+    BUS->>I: por cada línea inventariable
+    I->>I: StockArticulo.registrarPendiente(+cantidad)
+    A->>I: registrarRecepcion(pedidoId, líneas recibidas)
+    I->>I: StockArticulo.recibir(): físico += n, pendiente -= n
+    I->>BUS: MercanciaRecibidaIntegrationEvent
+    BUS->>C: consume
+    C->>C: Pedido.registrarRecepcion() → PARCIALMENTE_RECIBIDO / RECIBIDO
+```
+
+```mermaid
+flowchart LR
+    CAT["Catálogo<br/>(qué es el producto)"] -- "ProductoComprable<br/>(réplica/ACL)" --> COM["Compras<br/>Pedido + Líneas"]
+    COM -- "PedidoCompraAprobado<br/>PedidoCompraCancelado" --> INV["Inventario<br/>StockArticulo(producto, almacén)"]
+    INV -- "MercanciaRecibida" --> COM
+    VEN["Ventas"] -- "reservar / comprometer" --> INV
+```
+
+### Eventos
+
+| Evento | Tipo | Emite | Efecto |
+|---|---|---|---|
+| `ProductoAñadidoAPedido` | Domain | `Pedido` | Solo dentro de Compras |
+| `PedidoCompraAprobado` | Domain → Integration (outbox) | Compras | Inventario suma *pendiente de recibir* |
+| `PedidoCompraCancelado` | Integration | Compras | Inventario resta *pendiente* (compensación, decisión mía) |
+| `MercanciaRecibida` | Integration | Inventario | Compras marca líneas recibidas |
+| `StockIncrementado` / `StockActualizado` | Domain (+ integration si Ventas lo necesita) | `StockArticulo` | Proyecciones de disponibilidad |
+
+### Código (TypeScript)
+
+```ts
+// ---------- BC Inventario ----------
+class StockArticulo extends AggregateRoot {        // id = (productoId, almacenId)
+  private procesados = new Set<string>();          // idempotencia por mensaje
+  constructor(readonly productoId: ProductoId, readonly almacenId: AlmacenId,
+              private fisico = 0, private pendiente = 0, private reservado = 0,
+              public version = 0) { super(); }
+
+  disponible() { return this.fisico - this.reservado; }   // on hand − reservations
+
+  registrarPendiente(cantidad: number, refPedido: string) {
+    if (this.procesados.has(refPedido)) return;    // el broker puede entregar dos veces
+    this.pendiente += cantidad;
+    this.procesados.add(refPedido);
+  }
+
+  recibir(cantidad: number, refRecepcion: string) {
+    if (cantidad <= 0) throw new CantidadInvalida(cantidad);
+    if (this.procesados.has(refRecepcion)) return;
+    this.fisico += cantidad;
+    this.pendiente = Math.max(0, this.pendiente - cantidad); // puede llegar más de lo pedido
+    this.procesados.add(refRecepcion);
+    this.registrar(new StockIncrementado(this.productoId, this.almacenId, cantidad, this.fisico));
+  }
+
+  reservar(cantidad: number, refDemanda: string) {           // lo llama Ventas, no Compras
+    if (cantidad > this.disponible()) throw new StockInsuficiente(this.productoId);
+    this.reservado += cantidad;
+    this.procesados.add(refDemanda);
+  }
+}
+
+// Inventario reacciona al evento de integración de Compras (vía ACL/traductor)
+class RegistrarPendienteAlAprobarPedido {
+  constructor(private stock: StockArticuloRepository, private uow: UnitOfWork) {}
+  async handle(e: PedidoCompraAprobadoIntegrationEvent) {
+    for (const l of e.lineas.filter(l => l.inventariable)) {
+      const s = await this.stock.porProductoYAlmacen(l.productoId, l.almacenId);
+      s.registrarPendiente(l.cantidad, `${e.pedidoId}:${l.lineaId}`);
+      await this.uow.guardar([s]);   // un agregado por transacción; reintento si choca la versión
+    }
+  }
+}
+
+// ---------- BC Compras ----------
+class Pedido extends AggregateRoot {
+  // ...añadirLinea como antes, con almacenId en la línea
+  registrarRecepcion(lineaId: LineaId, cantidad: number) {
+    if (this.estado !== "APROBADO" && this.estado !== "PARCIALMENTE_RECIBIDO")
+      throw new PedidoNoRecibible(this.id);
+    this.linea(lineaId).sumarRecibido(cantidad);
+    this.estado = this.lineas.every(l => l.completa()) ? "RECIBIDO" : "PARCIALMENTE_RECIBIDO";
+  }
+}
+```
+
+Notas sobre el código:
+- **Idempotencia:** Milan Jovanović avisa de que la entrega puede repetirse y el alta debe ser idempotente con una clave de origen única. Aquí la clave es `pedidoId:lineaId` o el id de la recepción.
+- **Un agregado por transacción:** cada `StockArticulo` se guarda por separado (Vernon Part II). Si una línea falla, se reintenta sin deshacer las demás.
+- **Dónde vive la recepción física:** he puesto la entrada de mercancía en Inventario/Almacén porque es quien cuenta físicamente. Otra opción válida es un BC Recepción propio. Las fuentes no fijan esto.
 
 ## Código (TypeScript)
 
