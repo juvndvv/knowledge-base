@@ -1,39 +1,19 @@
 ---
-title: Comunicación entre Bounded Contexts en DDD
-tema: ddd
-subtemas: [diseño-estratégico, context-mapping, integración, eda]
-palabras_clave:
-  - bounded context
-  - context map
-  - context mapping
-  - upstream downstream
-  - partnership
-  - shared kernel
-  - customer supplier
-  - conformist
-  - anticorruption layer
-  - ACL
-  - open host service
-  - published language
-  - separate ways
-  - big ball of mud
-  - REST
-  - RPC
-  - mensajería
-  - eventos de integración
-  - eventos de dominio
-  - outbox
-  - consistencia eventual
-fuentes:
-  - https://domainlanguage.com/wp-content/uploads/2016/05/DDD_Reference_2015-03.pdf
-  - https://martinfowler.com/bliki/BoundedContext.html
-  - https://deviq.com/domain-driven-design/context-mapping
-  - https://learn.microsoft.com/en-us/dotnet/architecture/microservices/architect-microservice-container-applications/communication-in-microservice-architecture
-  - https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation
-  - https://milanjovanovic.tech/blog/domain-events-vs-integration-events
-  - https://microservices.io/patterns/data/transactional-outbox
-  - https://www.oreilly.com/library/view/implementing-domain-driven-design/9780133039900/ch13lev1sec4.html
-actualizado: 2026-10-29
+title: "Comunicación entre bounded contexts: context mapping e integración"
+topic: ddd
+subtopic: diseño-estratégico
+tags: [ddd, bounded-context, context-map, context-mapping, upstream, downstream, partnership, shared-kernel, customer-supplier, conformist, anticorruption-layer, open-host-service, published-language, separate-ways, big-ball-of-mud, integracion, rest, rpc, mensajeria, evento-de-integracion, evento-de-dominio, outbox, consistencia-eventual]
+aliases: [integración entre contextos, bounded context integration, context mapping patterns, ACL, OHS, capa anticorrupción, servicio de host abierto, lenguaje publicado, integration events, domain events, transactional outbox, eventual consistency, sync vs async]
+sources:
+  - Evans, "Domain-Driven Design Reference" (2015) — https://domainlanguage.com/wp-content/uploads/2016/05/DDD_Reference_2015-03.pdf
+  - Fowler, bliki "BoundedContext" — https://martinfowler.com/bliki/BoundedContext.html
+  - DevIQ, "Context Mapping" — https://deviq.com/domain-driven-design/context-mapping
+  - Microsoft, "Communication in a microservice architecture" — https://learn.microsoft.com/en-us/dotnet/architecture/microservices/architect-microservice-container-applications/communication-in-microservice-architecture
+  - Microsoft, "Domain events: design and implementation" — https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation
+  - Jovanović, "Domain Events vs Integration Events" — https://milanjovanovic.tech/blog/domain-events-vs-integration-events
+  - Richardson, "Pattern: Transactional outbox" — https://microservices.io/patterns/data/transactional-outbox
+  - Vernon, "Implementing Domain-Driven Design", cap. 13 (índice) — https://www.oreilly.com/library/view/implementing-domain-driven-design/9780133039900/ch13lev1sec4.html
+created: 2026-10-29
 ---
 
 # Comunicación entre Bounded Contexts en DDD
@@ -220,4 +200,4 @@ Microsoft advierte que la consistencia eventual "requires more complex code in o
 
 ## Relacionado
 
-- [[eventos-de-dominio]] · [[cqrs]] · [[event-driven-architecture]] · [[aggregates]] · [[consistencia-eventual]] · [[outbox]]
+- [DDD táctico: building blocks](building-blocks-tacticos.md) (eventos de dominio, agregados)
