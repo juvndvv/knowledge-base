@@ -2,7 +2,7 @@
 title: "DDD táctico: building blocks (entidad, value object, agregado y demás)"
 topic: ddd
 subtopic: diseño-táctico
-tags: [ddd, entidad, value-object, agregado, aggregate-root, domain-service, application-service, domain-event, repository, factory, module, invariante, consistencia]
+tags: [ddd, entidad, value-object, agregado, aggregate-root, domain-service, application-service, domain-event, integration-event, outbox, repository, factory, module, invariante, consistencia]
 aliases: [entity, value object, aggregate, aggregate root, domain event, repositorio, factoría, módulo, servicio de dominio, servicio de aplicación]
 sources:
   - Evans, "Domain-Driven Design Reference" (2015)
@@ -22,7 +22,8 @@ created: 2026-10-29
 | **Value Object** | Objeto definido solo por sus atributos | No | No (inmutable) | Dominio | Describir/medir algo, operaciones sin efectos laterales |
 | **Agregado** | Cluster de entidades + VOs tratado como unidad, con una raíz | Sí (la de la raíz) | Sí, solo vía la raíz | Dominio | Frontera de consistencia y de transacción; protege invariantes |
 | **Aggregate Root** | La entidad única de entrada al agregado | Sí (global) | Sí | Dominio | Hacer cumplir las invariantes del agregado entero |
-| **Domain Event** | Registro de algo relevante que ya ocurrió en el dominio | No (es un hecho) | No (inmutable) | Dominio | Comunicar cambios; consistencia eventual entre agregados |
+| **Domain Event** | Registro de algo relevante que ya ocurrió en el dominio | No (es un hecho) | No (inmutable) | Dominio | Efectos laterales dentro del mismo bounded context, en memoria |
+| **Integration Event** *(no es building block de Evans, ver §4)* | Hecho publicado hacia otros bounded contexts/servicios | No | No (inmutable) | Aplicación (se crea) + infraestructura (outbox, broker) | Propagar cambios fuera del contexto, siempre asíncrono y tras el commit |
 | **Domain Service** | Operación del dominio que no encaja en una entidad/VO | No | Sin estado | Dominio | Reglas de negocio que cruzan varias entidades/agregados |
 | **Application Service** | Orquestador de un caso de uso | No | Sin estado | Aplicación | Cargar, invocar dominio, guardar, transacción, auth. **Sin lógica de negocio** |
 | **Repository** | Ilusión de colección de agregados | No | — | Interfaz en dominio, implementación en infraestructura | Obtener/guardar agregados completos, uno por raíz |
@@ -155,19 +156,169 @@ class Pedido {                                   // Aggregate Root
 }
 ```
 
-## 4. Domain Event
+## 4. Domain Event y Integration Event
 
-**Evans:** *"Model information about activity in the domain as a series of discrete events."* Son inmutables, normalmente con timestamp e identidades de las entidades implicadas.
+**Evans:** *"Model information about activity in the domain as a series of discrete events."* Son inmutables, normalmente con timestamp e identidades de las entidades implicadas. Se nombran en **pasado**: `PedidoConfirmado`, `PagoRechazado`.
 
-**Microsoft:** *"a record was inserted into a table"* no es un evento de dominio; *"a delivery was canceled"* sí. Distingue **eventos de dominio internos** (dentro del bounded context) de **eventos de integración** (publicados vía broker a otros contextos). Ej.: `DeliveryCompleted` lo consume el contexto de cuentas para facturar.
+**Microsoft:** *"a record was inserted into a table"* no es un evento de dominio; *"a delivery was canceled"* sí.
 
-Se nombran en **pasado**: `PedidoConfirmado`, `PagoRechazado`.
+### ¿Es el evento de integración un building block?
+
+**No en el sentido de Evans.** El *Domain Event* sí está en la DDD Reference de Evans; el *Integration Event* es una distinción que aparece en la guía de microservicios de Microsoft (eShopOnContainers) y en el blog de Cesar de la Torre (Microsoft). Es un **mecanismo de integración entre bounded contexts**, no una pieza del modelo de dominio. Por eso aquí se documenta junto al Domain Event, pero vive en otras capas.
+
+### Diferencias
+
+| | Domain Event | Integration Event |
+|---|---|---|
+| Alcance | Mismo dominio / bounded context / proceso | Otros microservicios, bounded contexts o apps externas |
+| Transporte | En memoria (dispatcher, p. ej. MediatR) | Broker o bus de mensajes (Service Bus, colas, Kafka...) |
+| Sincronía | Síncrono o asíncrono | **Siempre asíncrono** |
+| Momento | Se levanta en la entidad **antes** de persistir; se despacha antes o después del commit (decisión de diseño) | **Solo tras persistir con éxito** |
+| Quién lo crea | El agregado (capa de dominio) | Un handler o servicio de aplicación, a partir del evento de dominio |
+| Contrato | Interno, puede llevar tipos del dominio | Público y estable: tipos primitivos/DTO, versionado |
+| Ejemplo | `PedidoConfirmado` → reservar stock en el mismo servicio | `PedidoConfirmadoIntegrationEvent` → Facturación emite la factura |
+
+Citas clave:
+
+- Microsoft: los domain events usan *"in-memory event based communication across disconnected aggregates that are part of the same domain model"*; en ellos *"you must do everything in-process (in-memory) and within the same transaction or operation."* (de la Torre)
+- Microsoft: *"Integration events, however, should always be asynchronous."* y deben ocurrir *"only if the entity is successfully persisted, otherwise it's as if the entire operation never happened."* (guía .NET)
+- Microsoft: *"you should not publish integration events until you are 100% sure that your original operation"* ha tenido éxito. (de la Torre)
+
+### Cómo se crea y se publica un Domain Event
+
+Patrón de la guía .NET de Microsoft: **el agregado solo registra el evento** (*"the only thing that the AddDomainEvent method is doing is adding an event to the list. No event is dispatched yet"*). Se despachan al guardar, en el `SaveChanges`.
 
 ```ts
+// 1) Dominio: el evento es un hecho inmutable en pasado
 class PedidoConfirmado implements DomainEvent {
-  constructor(readonly pedidoId: PedidoId, readonly clienteId: ClienteId, readonly ocurridoEn: Date) {}
+  constructor(readonly pedidoId: PedidoId, readonly clienteId: ClienteId,
+              readonly total: Dinero, readonly ocurridoEn: Date) {}
+}
+
+// 2) Dominio: la base de las entidades acumula eventos, NO los despacha
+abstract class AggregateRoot {
+  private eventos: DomainEvent[] = [];
+  protected registrar(e: DomainEvent) { this.eventos.push(e); }
+  extraerEventos(): DomainEvent[] { const e = this.eventos; this.eventos = []; return e; }
+}
+
+// 3) Dominio: el agregado lo levanta como parte de su comportamiento
+class Pedido extends AggregateRoot {
+  confirmar() {
+    if (this.lineas.length === 0) throw new Error("Pedido vacío");
+    this.estado = "CONFIRMADO";
+    this.registrar(new PedidoConfirmado(this.id, this.clienteId, this.total(), new Date()));
+  }
+}
+
+// 4) Infraestructura: el Unit of Work despacha en memoria ANTES del commit
+//    (opción por defecto de la guía .NET: los efectos laterales entran en la misma transacción)
+class UnitOfWork {
+  async guardar(agregados: AggregateRoot[]) {
+    await this.db.transaction(async tx => {
+      for (const a of agregados)
+        for (const e of a.extraerEventos())
+          await this.dispatcher.despachar(e, tx);   // handlers en el mismo proceso
+      await tx.persistir(agregados);                 // si falla, rollback de todo
+    });
+  }
+}
+
+// 5) Aplicación: handler del evento de dominio (cero, uno o varios por evento)
+class ReservarStockAlConfirmarPedido implements DomainEventHandler<PedidoConfirmado> {
+  constructor(private inventario: InventarioRepository) {}
+  async handle(e: PedidoConfirmado, tx: Tx) {
+    const inv = await this.inventario.porPedido(e.pedidoId, tx);
+    inv.reservar(e.pedidoId);   // otro agregado, MISMO bounded context
+  }
 }
 ```
+
+> Trade-off (Microsoft): despachar **antes** del commit mete los efectos laterales en la misma transacción (simple con EF Core + BD relacional). Despachar **después** da transacciones separadas, menos bloqueo y más escalabilidad, pero exige consistencia eventual y acciones compensatorias. Con la opción "antes", ten en cuenta que se modifican dos agregados en una transacción, lo que choca con la regla 1 de Vernon; es una decisión consciente.
+
+### Cómo se crea y se publica un Integration Event (con Transactional Outbox)
+
+Problema (microservices.io): *"How to atomically update the database and send messages to a message broker?"* 2PC no es opción y publicar dentro o después de la transacción no es fiable. Solución: **guardar el mensaje en una tabla outbox en la misma transacción** que los datos de negocio; un **message relay** separado lo envía al broker (por *polling publisher* o *transaction log tailing*). El relay puede enviar un mensaje más de una vez, así que **los consumidores deben ser idempotentes**.
+
+```ts
+// 1) Contrato público: primitivos, versionado, sin tipos del dominio
+interface PedidoConfirmadoIntegrationEvent {
+  eventId: string;          // para idempotencia en el consumidor
+  type: "ventas.pedido-confirmado.v1";
+  occurredAt: string;
+  pedidoId: string;
+  clienteId: string;
+  total: { cantidad: number; moneda: string };
+}
+
+// 2) Aplicación: un handler del DOMAIN event traduce a INTEGRATION event
+//    y lo escribe en el outbox, dentro de la MISMA transacción
+class PublicarPedidoConfirmadoHaciaFuera implements DomainEventHandler<PedidoConfirmado> {
+  constructor(private outbox: Outbox) {}
+  async handle(e: PedidoConfirmado, tx: Tx) {
+    await this.outbox.añadir({
+      eventId: crypto.randomUUID(),
+      type: "ventas.pedido-confirmado.v1",
+      occurredAt: e.ocurridoEn.toISOString(),
+      pedidoId: e.pedidoId.valor,
+      clienteId: e.clienteId.valor,
+      total: { cantidad: e.total.cantidad, moneda: e.total.moneda },
+    }, tx);                                 // INSERT INTO outbox ... (no se envía nada aún)
+  }
+}
+
+// 3) Infraestructura: message relay (polling publisher), proceso aparte
+class OutboxRelay {
+  async tick() {
+    const pendientes = await this.db.query("SELECT * FROM outbox WHERE enviado_en IS NULL ORDER BY id LIMIT 100");
+    for (const m of pendientes) {
+      await this.broker.publicar(m.type, m.payload);   // solo llega aquí lo ya commiteado
+      await this.db.exec("UPDATE outbox SET enviado_en = now() WHERE id = $1", [m.id]);
+      // si cae entre publicar y UPDATE → reenvío → el consumidor debe ser idempotente
+    }
+  }
+}
+
+// 4) Otro bounded context (Facturación): consumidor idempotente
+class EmitirFacturaAlConfirmarPedido {
+  async on(msg: PedidoConfirmadoIntegrationEvent) {
+    if (await this.procesados.existe(msg.eventId)) return;   // idempotencia
+    await this.facturas.emitirPara(msg.pedidoId, msg.total);
+    await this.procesados.marcar(msg.eventId);
+  }
+}
+```
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant AS as Application Service
+  participant P as Pedido (Aggregate Root)
+  participant UoW as Unit of Work
+  participant DH as Domain Event Handlers (mismo proceso)
+  participant DB as BD (tablas negocio + outbox)
+  participant R as Message Relay
+  participant MB as Broker
+  participant FA as Facturación (otro BC)
+
+  AS->>P: confirmar()
+  P->>P: registrar(PedidoConfirmado) — solo se guarda en la lista
+  AS->>UoW: guardar(pedido)
+  rect rgb(235,245,255)
+  Note over UoW,DB: UNA transacción local
+  UoW->>DH: despachar PedidoConfirmado (en memoria)
+  DH->>DB: reservar stock (otro agregado, mismo BC)
+  DH->>DB: INSERT outbox: PedidoConfirmadoIntegrationEvent
+  UoW->>DB: UPDATE pedido + COMMIT
+  end
+  R->>DB: lee outbox pendiente (polling o log tailing)
+  R->>MB: publica integration event (asíncrono)
+  R->>DB: marca enviado
+  MB-->>FA: entrega (al menos una vez)
+  FA->>FA: handler idempotente → emite factura
+```
+
+Resumen: **Domain Event = qué pasó dentro de mi modelo, en memoria. Integration Event = qué cuento hacia fuera, por broker, tras el commit y vía outbox.**
 
 ## 5. Domain Service vs. Application Service
 
@@ -190,12 +341,11 @@ class ServicioTransferencia {
 
 // Application Service: orquesta el caso de uso, sin reglas de negocio
 class ConfirmarPedidoHandler {
-  constructor(private pedidos: PedidoRepository, private bus: EventBus) {}
+  constructor(private pedidos: PedidoRepository) {}
   async ejecutar(cmd: { pedidoId: string }) {
     const pedido = await this.pedidos.porId(PedidoId.de(cmd.pedidoId));
     pedido.confirmar();                 // la decisión vive en el dominio
-    await this.pedidos.guardar(pedido); // 1 transacción = 1 agregado
-    await this.bus.publicar(pedido.extraerEventos());
+    await this.pedidos.guardar(pedido); // guarda y despacha sus domain events (ver §4)
   }
 }
 ```
@@ -265,9 +415,11 @@ flowchart TB
     RI[[Repository interface]]
     EV>Domain Event: PedidoConfirmado]
   end
+  DEH[Domain Event Handler<br/>capa de aplicación]
   subgraph INF["Infraestructura"]
     RIMPL[Repository impl. SQL/ORM]
-    BUS[Event bus / broker]
+    OB[(Outbox)]
+    BUS[Broker]
   end
 
   C --> AS
@@ -275,10 +427,11 @@ flowchart TB
   AS --> AR
   AS --> DS
   F -. crea .-> AR
-  AR -. emite .-> EV
+  AR -. registra .-> EV
   RIMPL -. implementa .-> RI
-  AS --> BUS
-  EV -. se publica vía .-> BUS
+  EV -. despacho en memoria .-> DEH
+  DEH -. Integration Event .-> OB
+  OB -. relay asíncrono .-> BUS
 ```
 
 ```mermaid
@@ -294,8 +447,9 @@ sequenceDiagram
   R-->>AS: Pedido (agregado completo)
   AS->>P: confirmar()
   P->>P: valida invariantes, registra PedidoConfirmado
-  AS->>R: guardar(pedido) [1 transacción]
-  AS->>B: publicar(PedidoConfirmado)
+  AS->>R: guardar(pedido) [1 transacción: datos + outbox]
+  Note over R,B: el relay lee el outbox tras el commit (§4)
+  R-->>B: PedidoConfirmadoIntegrationEvent
   B-->>F: evento de integración (asíncrono)
   Note over F: Consistencia eventual entre agregados/contextos
 ```
@@ -308,6 +462,9 @@ sequenceDiagram
 - **Repositorios para entidades hijas** (Evans: solo para raíces).
 - **Lógica de negocio en el application service** (Microsoft).
 - **Eventos técnicos** ("fila insertada") en vez de hechos del dominio (Microsoft).
+- **Publicar integration events antes del commit** o directamente al broker sin outbox: otros contextos reaccionan a cambios que luego se revierten, o se pierden mensajes (Microsoft, microservices.io).
+- **Exponer el domain event tal cual hacia fuera**: acopla a otros contextos con tu modelo interno; tradúcelo a un contrato de integración (práctica habitual; las fuentes citadas no lo formulan así).
+- **Consumidores no idempotentes**: el relay del outbox puede reenviar mensajes (microservices.io).
 
 ## Fuentes
 
@@ -317,3 +474,6 @@ sequenceDiagram
 - Martin Fowler, [DDD_Aggregate](https://www.martinfowler.com/bliki/DDD_Aggregate.html)
 - Microsoft, [Using tactical DDD to design microservices](https://learn.microsoft.com/en-us/azure/architecture/microservices/model/tactical-ddd)
 - Microsoft, [Design a microservice domain model](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model)
+- Microsoft, [Domain events: design and implementation](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation)
+- Cesar de la Torre (Microsoft), [Domain Events vs. Integration Events in DDD and microservices architectures (2017)](https://devblogs.microsoft.com/cesardelatorre/domain-events-vs-integration-events-in-domain-driven-design-and-microservices-architectures/)
+- Chris Richardson, [Pattern: Transactional outbox](https://microservices.io/patterns/data/transactional-outbox)
