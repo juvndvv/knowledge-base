@@ -318,6 +318,16 @@ sequenceDiagram
   FA->>FA: handler idempotente → emite factura
 ```
 
+### ¿Y si publico directamente los domain events al broker?
+
+Se puede técnicamente, pero las fuentes lo desaconsejan:
+
+- **Acoplamiento.** *"your internal model has now become your public API"*; *"Every class name, field name, enum value, and modeling decision can become something consumers depend on"*, que es *"exactly the kind of coupling bounded contexts are supposed to avoid."* (Codeartify, "Domain Events Are Not Integration Events")
+- **Contratos.** Una vez otros contextos dependen del evento, *"They become contracts. And contracts are harder to change."* Los de integración deben ser estables, versionados (`...V1`) y *"intentionally published"*. (misma fuente)
+- **No te ahorras el outbox.** Si sale del proceso, sigue aplicando que solo puede publicarse tras el commit (Microsoft), así que necesitas outbox igualmente.
+
+Test que propone la fuente: *"Is this fact meaningful outside this bounded context?"* Si no, se queda interno. Si sí, se diseña un integration event a partir del domain event.
+
 Resumen: **Domain Event = qué pasó dentro de mi modelo, en memoria. Integration Event = qué cuento hacia fuera, por broker, tras el commit y vía outbox.**
 
 ## 5. Domain Service vs. Application Service
@@ -476,4 +486,5 @@ sequenceDiagram
 - Microsoft, [Design a microservice domain model](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model)
 - Microsoft, [Domain events: design and implementation](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation)
 - Cesar de la Torre (Microsoft), [Domain Events vs. Integration Events in DDD and microservices architectures (2017)](https://devblogs.microsoft.com/cesardelatorre/domain-events-vs-integration-events-in-domain-driven-design-and-microservices-architectures/)
+- Codeartify, [Domain Events Are Not Integration Events](https://codeartify.substack.com/p/domain-events-are-not-integration)
 - Chris Richardson, [Pattern: Transactional outbox](https://microservices.io/patterns/data/transactional-outbox)
