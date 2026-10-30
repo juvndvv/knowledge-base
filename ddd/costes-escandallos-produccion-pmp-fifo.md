@@ -2,7 +2,7 @@
 title: "Costes: valoración de stock (PMP, FIFO), escandallos y producciones"
 topic: ddd
 subtopic: diseño-táctico
-tags: [ddd, coste, valoracion-de-existencias, pmp, precio-medio-ponderado, fifo, capas-de-coste, escandallo, receta, sub-receta, produccion, elaboracion, rendimiento, merma, coste-teorico, coste-real, food-cost, inventario, cqrs, proyeccion, strategy, pgc, consumo, descuento-por-ventas, backflush, depletion, tpv, recuento]
+tags: [ddd, coste, valoracion-de-existencias, pmp, precio-medio-ponderado, fifo, capas-de-coste, escandallo, receta, sub-receta, produccion, elaboracion, rendimiento, merma, coste-teorico, coste-real, food-cost, inventario, cqrs, proyeccion, strategy, pgc, consumo, descuento-por-ventas, backflush, depletion, tpv, recuento, albaran, coste-provisional, diferencia-de-precio, gr-ir]
 aliases: [weighted average cost, WAC, moving average, FIFO layers, cost layers, recipe costing, theoretical food cost, actual food cost, yield, edible portion, EP cost, AP cost, production cost, coste de producción, NRV 10ª, norma de valoración existencias]
 sources:
   - PGC, Norma de registro y valoración 10ª "Existencias" (texto en SuperContable) — https://www.supercontable.com/informacion/Contabilidad/Norma_Valoracion_10a.Plan_General_Contabilidad.Existencias.html
@@ -11,6 +11,8 @@ sources:
   - CrunchTime, "Determining Product Depletion and Recipe Costing" — https://help.crunchtime.com/EM/en/WebHelp_EMw/Content/EM_POSdepletion/Recipe_Depletion_and_Costing.htm
   - CrunchTime, "Auto-Daily Prep for Sales Depletion" — https://help.crunchtime.com/EM/en/WebHelp_EMw/Content/EM_Setup1/_Auto_Daily_Prep.htm
   - AccountingTools, "Backflush accounting" — https://www.accountingtools.com/articles/what-is-backflush-accounting.html
+  - SAP Help, "Postings: Goods Receipt for Purchase Order" — https://help.sap.com/saphelp_46C/helpdata/EN/47/60ffa849f011d1894c0000e829fbbd/content.htm
+  - SAP Help, "Material with MAP with/without Stock Coverage" — https://help.sap.com/saphelp_46c/helpdata/en/a8/b994cc452b11d189430000e829fbbd/content.htm
   - Meez, "Actual vs theoretical food costs" — https://getmeez.com/blog/actual-vs-theoretical-food-costs
   - Supy, "Restaurant yield costing" — https://supy.io/blog/learn-restaurant-yield-costing
 created: 2026-10-29
@@ -69,6 +71,62 @@ Cada **entrada** de stock crea una capa: SKU.io crea las capas FIFO al recibir e
 Persistencia: una tabla de capas por `(productoId, almacenId)` con `fechaEntrada`, `cantidadRestante`, `costeUnitario` y `refOrigen`. Se carga con el agregado `StockArticulo`, ordenada por fecha. Otra opción es reconstruirlas reproduciendo el historial de movimientos, al estilo del event sourcing de [Salesforce](https://engineering.salesforce.com/event-sourcing-for-an-inventory-availability-solution-3cc0daf5a742).
 
 Si la **factura** llega con otro precio (ver la nota de facturas), se corrige el coste de la capa de esa recepción en la parte que aún queda. La parte ya consumida genera un **ajuste de coste** aparte. Esto es recomendación mía.
+
+## Coste provisional (albarán) y coste definitivo (factura)
+
+SAP lo resuelve en dos pasos:
+- En la **entrada de mercancía** de un material a precio medio móvil se contabiliza *"the delivered quantity x net order price (or invoice price)"*. El valor queda en una cuenta puente entre recepción y factura (GR/IR) ([SAP, GR for PO](https://help.sap.com/saphelp_46C/helpdata/EN/47/60ffa849f011d1894c0000e829fbbd/content.htm)).
+- Si la factura trae otro precio y **todo el stock sigue en almacén**: *"The variance between the purchase order value and the invoice value is posted to the stock account"*. El precio medio cambia y la cantidad no ([SAP, MAP with stock coverage](https://help.sap.com/saphelp_46c/helpdata/en/a8/b994cc452b11d189430000e829fbbd/content.htm)).
+- Si **parte ya se consumió**, la diferencia se reparte: la parte del stock que queda va al stock y el resto a *"Expenses from price differences"* ([SAP, MAP without stock coverage](https://help.sap.com/saphelp_46C/helpdata/EN/a8/b994d9452b11d189430000e829fbbd/content.htm)).
+
+Traducido a nuestro modelo (decisiones mías):
+
+| Momento | Precio | Efecto en Inventario |
+|---|---|---|
+| Recepción | Precio del **albarán valorado** si lo trae; si no, el de la **línea del pedido** | Entrada a coste **provisional**. La recepción queda como "pendiente de facturar" |
+| Factura conformada | Precio de la factura | `AjustarCosteRecepcion`: la parte aún en stock corrige el PMP o la capa FIFO; la parte consumida va a un ajuste de coste del periodo |
+| Factura que no llega | — | La recepción sigue provisional. Hace falta un listado de albaranes pendientes de facturar |
+
+Los consumos pasados **no se recalculan**: quedan con el coste que tenían al consumirse, y la diferencia se lleva aparte. Así el historial de stock es estable y el escandallo se actualiza al recibir el nuevo `CosteArticuloActualizado`.
+
+```mermaid
+sequenceDiagram
+    participant INV as Inventario (StockArticulo)
+    participant FR as Facturas recibidas
+    participant COC as Cocina (proyección escandallo)
+    Note over INV: Recepción 100 ud a 10 € (albarán/pedido)<br/>PMP provisional
+    INV->>COC: CosteArticuloActualizado (10 €)
+    Note over INV: Se consumen 40 ud a 10 €
+    FR->>FR: FacturaConformada: 100 ud a 11 €
+    FR->>INV: AjustarCosteRecepcion(recepciónId, +1 €/ud)
+    INV->>INV: 60 ud en stock: +60 € al valor → nuevo PMP
+    INV->>INV: 40 ud consumidas: +40 € a AjusteCosteConsumido
+    INV->>COC: CosteArticuloActualizado (PMP nuevo)
+```
+
+```ts
+class StockArticulo extends AggregateRoot {
+  // ... recibir() guarda la recepción con su coste provisional
+  ajustarCosteRecepcion(recepcionId: string, nuevoCosteUnitario: Dinero, ref: string) {
+    if (this.procesados.has(ref)) return;                    // idempotente por facturaId:línea
+    const r = this.recepciones.get(recepcionId);
+    if (!r) throw new RecepcionDesconocida(recepcionId);
+    const diferencia = nuevoCosteUnitario.menos(r.costeUnitario);
+    const enStock = this.valoracion.cantidadRestanteDe(recepcionId);   // PMP: proporcional; FIFO: lo que queda de su capa
+    const consumida = r.cantidad - enStock;
+
+    this.valoracion.revalorizar(recepcionId, diferencia.por(enStock)); // cambia PMP o coste de la capa
+    if (consumida > 0)
+      this.registrar(new AjusteCosteConsumido(this.productoId, recepcionId, diferencia.por(consumida)));
+    r.marcarDefinitiva(nuevoCosteUnitario);
+    this.procesados.add(ref);
+    this.registrar(new CosteArticuloActualizado(this.productoId, this.almacenId,
+                                                this.valoracion.costeUnitarioActual()));
+  }
+}
+```
+
+Con PMP no existe "la parte de esa recepción que queda", porque el stock está mezclado. Lo habitual es aplicar la proporción del stock actual sobre lo recibido, como hace SAP con la cobertura de stock (*"Since only 80 pieces of the material are in stock at the time of invoice receipt"*). Con FIFO sí se sabe: es lo que queda de la capa de esa recepción.
 
 ## Modelo (TypeScript)
 
