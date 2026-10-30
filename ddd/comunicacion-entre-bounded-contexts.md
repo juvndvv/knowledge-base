@@ -2,7 +2,7 @@
 title: "Comunicación entre bounded contexts: context mapping e integración"
 topic: ddd
 subtopic: diseño-estratégico
-tags: [ddd, bounded-context, context-map, context-mapping, upstream, downstream, partnership, shared-kernel, customer-supplier, conformist, anticorruption-layer, open-host-service, published-language, separate-ways, big-ball-of-mud, integracion, rest, rpc, mensajeria, evento-de-integracion, evento-de-dominio, outbox, consistencia-eventual]
+tags: [ddd, php, bounded-context, context-map, context-mapping, upstream, downstream, partnership, shared-kernel, customer-supplier, conformist, anticorruption-layer, open-host-service, published-language, separate-ways, big-ball-of-mud, integracion, rest, rpc, mensajeria, evento-de-integracion, evento-de-dominio, outbox, consistencia-eventual]
 aliases: [comunicación bidireccional, mutually dependent, dependencia mutua, dependencia cíclica, coreografía, orquestación, integración entre contextos, bounded context integration, context mapping patterns, ACL, OHS, capa anticorrupción, servicio de host abierto, lenguaje publicado, integration events, domain events, transactional outbox, eventual consistency, sync vs async]
 sources:
   - Evans, "Domain-Driven Design Reference" (2015) — https://domainlanguage.com/wp-content/uploads/2016/05/DDD_Reference_2015-03.pdf
@@ -103,18 +103,29 @@ flowchart LR
     ACL -->|"llamada SOAP/REST"| ERP
 ```
 
-```ts
+```php
+<?php
 // Puerto definido en el dominio de Facturación
-interface ClienteFacturable { id: ClienteId; razonSocial: string; nif: Nif; }
-interface ClientesFacturables { porId(id: ClienteId): Promise<ClienteFacturable>; }
+final readonly class ClienteFacturable
+{
+    public function __construct(public ClienteId $id, public string $razonSocial, public Nif $nif) {}
+}
+
+interface ClientesFacturables
+{
+    public function porId(ClienteId $id): ClienteFacturable;
+}
 
 // ACL: traduce el modelo del ERP al lenguaje de Facturación
-class ClientesFacturablesDesdeErp implements ClientesFacturables {
-  constructor(private erp: ErpClient) {}
-  async porId(id: ClienteId) {
-    const raw = await this.erp.getCustomer(id.valor); // { KUNNR, NAME1, STCD1 }
-    return { id, razonSocial: raw.NAME1.trim(), nif: Nif.parse(raw.STCD1) };
-  }
+final class ClientesFacturablesDesdeErp implements ClientesFacturables
+{
+    public function __construct(private ErpClient $erp) {}
+
+    public function porId(ClienteId $id): ClienteFacturable
+    {
+        $raw = $this->erp->getCustomer($id->valor);   // ['KUNNR' => ..., 'NAME1' => ..., 'STCD1' => ...]
+        return new ClienteFacturable($id, trim($raw['NAME1']), Nif::parse($raw['STCD1']));
+    }
 }
 ```
 

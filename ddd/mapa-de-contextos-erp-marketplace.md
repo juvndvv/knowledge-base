@@ -2,7 +2,7 @@
 title: "Mapa de bounded contexts del ERP marketplace (compras, inventario, cocina, facturas)"
 topic: ddd
 subtopic: diseño-estratégico
-tags: [ddd, bounded-context, context-map, subdominio, core-domain, generic-subdomain, supporting-subdomain, marketplace, compras, ventas, catalogo, inventario, cocina, escandallo, tpv, facturacion, facturas-recibidas, organizaciones, notificaciones, catalogo-compartido, catalogo-de-compra, tarifa-por-cliente]
+tags: [ddd, php, bounded-context, context-map, subdominio, core-domain, generic-subdomain, supporting-subdomain, marketplace, compras, ventas, catalogo, inventario, cocina, escandallo, tpv, facturacion, facturas-recibidas, organizaciones, notificaciones, catalogo-compartido, catalogo-de-compra, tarifa-por-cliente]
 aliases: [context map, mapa de contextos, bounded contexts ERP, core domain, generic subdomain, supporting subdomain, ERP restauración, B2B marketplace contexts]
 sources:
   - Evans, "Domain-Driven Design Reference" (2015) — https://domainlanguage.com/wp-content/uploads/2016/05/DDD_Reference_2015-03.pdf
@@ -114,30 +114,74 @@ flowchart LR
     CC -- "articuloId" --> INV["Inventario"]
 ```
 
-```ts
+```php
+<?php
 // Compras: una entrada del catálogo de compra del cliente
-type Origen = { tipo: "PROVEEDOR"; productoProveedorId: string; version: number } | { tipo: "CLIENTE" };
+enum TipoOrigen: string
+{
+    case Proveedor = 'PROVEEDOR';   // sincronizada desde el catálogo del proveedor (Ventas)
+    case Cliente = 'CLIENTE';       // alta manual del cliente
+}
 
-class ProductoComprable extends AggregateRoot {
-  constructor(readonly id: ProductoComprableId, readonly clienteOrgId: OrgId,
-              readonly proveedorId: ProveedorId, private origen: Origen,
-              private nombre: string, private formato: FactorConversion, private precio: Dinero,
-              private referenciaInterna?: string, private articuloId?: ArticuloId) { super(); }
+final readonly class Origen
+{
+    private function __construct(
+        public TipoOrigen $tipo,
+        public ?string $productoProveedorId = null,
+        public int $version = 0,
+    ) {}
 
-  // Solo el proveedor (vía evento) cambia precio y formato si la entrada está sincronizada
-  aplicarTarifaProveedor(precio: Dinero, formato: FactorConversion, version: number) {
-    if (this.origen.tipo !== "PROVEEDOR") return;
-    if (version <= this.origen.version) return;            // eventos fuera de orden o repetidos
-    this.precio = precio; this.formato = formato;
-    this.origen = { ...this.origen, version };
-  }
+    public static function proveedor(string $productoProveedorId, int $version): self
+    {
+        return new self(TipoOrigen::Proveedor, $productoProveedorId, $version);
+    }
 
-  editarPrecio(precio: Dinero) {                            // el usuario del cliente
-    if (this.origen.tipo === "PROVEEDOR") throw new PrecioGestionadoPorProveedor(this.id);
-    this.precio = precio;
-  }
+    public static function cliente(): self
+    {
+        return new self(TipoOrigen::Cliente);
+    }
+}
 
-  vincularArticulo(articuloId: ArticuloId) { this.articuloId = articuloId; } // siempre editable
+final class ProductoComprable extends AggregateRoot
+{
+    public function __construct(
+        public readonly ProductoComprableId $id,
+        public readonly OrgId $clienteOrgId,
+        public readonly ProveedorId $proveedorId,
+        private Origen $origen,
+        private string $nombre,
+        private FactorConversion $formato,
+        private Dinero $precio,
+        private ?string $referenciaInterna = null,
+        private ?ArticuloId $articuloId = null,
+    ) {}
+
+    // Solo el proveedor (vía evento) cambia precio y formato si la entrada está sincronizada
+    public function aplicarTarifaProveedor(Dinero $precio, FactorConversion $formato, int $version): void
+    {
+        if ($this->origen->tipo !== TipoOrigen::Proveedor) {
+            return;
+        }
+        if ($version <= $this->origen->version) {
+            return;                                        // eventos fuera de orden o repetidos
+        }
+        $this->precio = $precio;
+        $this->formato = $formato;
+        $this->origen = Origen::proveedor($this->origen->productoProveedorId, $version);
+    }
+
+    public function editarPrecio(Dinero $precio): void      // el usuario del cliente
+    {
+        if ($this->origen->tipo === TipoOrigen::Proveedor) {
+            throw new PrecioGestionadoPorProveedor($this->id);
+        }
+        $this->precio = $precio;
+    }
+
+    public function vincularArticulo(ArticuloId $articuloId): void   // siempre editable
+    {
+        $this->articuloId = $articuloId;
+    }
 }
 ```
 

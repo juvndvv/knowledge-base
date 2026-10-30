@@ -2,7 +2,7 @@
 title: "DDD táctico: building blocks (entidad, value object, agregado y demás)"
 topic: ddd
 subtopic: diseño-táctico
-tags: [ddd, strongly-typed-id, primitive-obsession, entidad, value-object, agregado, aggregate-root, domain-service, application-service, domain-event, integration-event, outbox, repository, factory, module, invariante, consistencia]
+tags: [ddd, php, strongly-typed-id, primitive-obsession, entidad, value-object, agregado, aggregate-root, domain-service, application-service, domain-event, integration-event, outbox, repository, factory, module, invariante, consistencia]
 aliases: [entity, value object, aggregate, aggregate root, domain event, integration event, evento de dominio, evento de integración, strongly-typed id, typed id, identificador tipado, transactional outbox, repositorio, factoría, módulo, servicio de dominio, servicio de aplicación]
 sources:
   - Evans, "Domain-Driven Design Reference" (2015) — https://domainlanguage.com/wp-content/uploads/2016/05/DDD_Reference_2015-03.pdf
@@ -17,6 +17,7 @@ sources:
   - Jovanović, "Domain Events vs Integration Events in .NET" — https://milanjovanovic.tech/blog/domain-events-vs-integration-events
   - Lock, "Using strongly-typed entity IDs to avoid primitive obsession, Part 1" — https://andrewlock.net/using-strongly-typed-entity-ids-to-avoid-primitive-obsession-part-1
   - Richardson, "Pattern: Transactional outbox" — https://microservices.io/patterns/data/transactional-outbox
+  - PHP manual, "Type declarations" — https://www.php.net/manual/en/language.types.declarations.php
 created: 2026-10-29
 ---
 
@@ -52,15 +53,35 @@ created: 2026-10-29
 
 **Microsoft:** las entidades deben *"encapsulate behavior, not only carry data"*. Ej.: una entidad `Delivery` contiene la lógica para decidir si se puede cancelar. Si solo tiene getters/setters es un **modelo anémico** (aceptable solo en servicios CRUD simples, según la misma fuente).
 
-```ts
-class Pedido {                       // Entidad: igualdad por id
-  constructor(readonly id: PedidoId, private estado: EstadoPedido) {}
+```php
+<?php
+enum EstadoPedido: string
+{
+    case Borrador = 'BORRADOR';
+    case Confirmado = 'CONFIRMADO';
+    case Enviado = 'ENVIADO';
+    case Cancelado = 'CANCELADO';
+}
 
-  cancelar(): void {                 // comportamiento, no solo datos
-    if (this.estado === "ENVIADO") throw new Error("No se puede cancelar un pedido enviado");
-    this.estado = "CANCELADO";
-  }
-  equals(o: Pedido) { return this.id.equals(o.id); }
+final class Pedido                     // Entidad: igualdad por id
+{
+    public function __construct(
+        public readonly PedidoId $id,
+        private EstadoPedido $estado,
+    ) {}
+
+    public function cancelar(): void   // comportamiento, no solo datos
+    {
+        if ($this->estado === EstadoPedido::Enviado) {
+            throw new DomainException('No se puede cancelar un pedido enviado');
+        }
+        $this->estado = EstadoPedido::Cancelado;
+    }
+
+    public function equals(Pedido $otro): bool
+    {
+        return $this->id->equals($otro->id);
+    }
 }
 ```
 
@@ -72,17 +93,36 @@ class Pedido {                       // Entidad: igualdad por id
 
 Importante: **la clasificación depende del contexto**. Microsoft pone el ejemplo de `Address`: es VO en un pedido, pero entidad en un sistema de facturación que necesita referenciarla.
 
-```ts
-class Dinero {                       // Value Object: igualdad por valor
-  private constructor(readonly cantidad: number, readonly moneda: string) {
-    if (cantidad < 0) throw new Error("Cantidad negativa");
-  }
-  static de(c: number, m: string) { return new Dinero(c, m); }
-  sumar(o: Dinero): Dinero {         // devuelve uno nuevo, no muta
-    if (o.moneda !== this.moneda) throw new Error("Monedas distintas");
-    return new Dinero(this.cantidad + o.cantidad, this.moneda);
-  }
-  equals(o: Dinero) { return this.cantidad === o.cantidad && this.moneda === o.moneda; }
+```php
+<?php
+final class Dinero                     // Value Object: igualdad por valor, inmutable
+{
+    private function __construct(
+        public readonly float $cantidad,
+        public readonly string $moneda,
+    ) {
+        if ($cantidad < 0) {
+            throw new InvalidArgumentException('Cantidad negativa');
+        }
+    }
+
+    public static function de(float $cantidad, string $moneda): self
+    {
+        return new self($cantidad, $moneda);
+    }
+
+    public function sumar(Dinero $otro): self   // devuelve uno nuevo, no muta
+    {
+        if ($otro->moneda !== $this->moneda) {
+            throw new InvalidArgumentException('Monedas distintas');
+        }
+        return new self($this->cantidad + $otro->cantidad, $this->moneda);
+    }
+
+    public function equals(Dinero $otro): bool
+    {
+        return $this->cantidad === $otro->cantidad && $this->moneda === $otro->moneda;
+    }
 }
 ```
 
@@ -96,16 +136,35 @@ flowchart LR
 
 ### Value Objects de identidad: *Strongly-Typed IDs*
 
-Un VO que envuelve el identificador de una entidad (`PedidoId`, `ClienteId`) se suele llamar **Strongly-Typed ID** (o *typed ID*). Evita la *primitive obsession*: *"The problem of using primitive values to represent domain concepts is called primitive obsession."* (Andrew Lock). Con `Guid`/`string` el compilador no detecta que pasas un `userId` donde va un `orderId`; con tipos distintos, no compila. Vernon usa este tipo de identidades (`ProductId`) para referenciar otros agregados por identidad.
+Un VO que envuelve el identificador de una entidad (`PedidoId`, `ClienteId`) se suele llamar **Strongly-Typed ID** (o *typed ID*). Evita la *primitive obsession*: *"The problem of using primitive values to represent domain concepts is called primitive obsession."* (Andrew Lock). Con `Guid`/`string` el compilador no detecta que pasas un `userId` donde va un `orderId`; con tipos distintos, no compila (Lock lo muestra en C#). En PHP no hay compilación, pero las declaraciones de tipo de los parámetros hacen que pasar un `ClienteId` donde va un `PedidoId` lance un `TypeError` en vez de seguir con un id equivocado ([PHP manual, Type declarations](https://www.php.net/manual/en/language.types.declarations.php)). Vernon usa este tipo de identidades (`ProductId`) para referenciar otros agregados por identidad.
 
-```ts
-class PedidoId {
-  private constructor(readonly valor: string) {}
-  static nuevo() { return new PedidoId(crypto.randomUUID()); }
-  static de(v: string) { if (!v) throw new Error("PedidoId vacío"); return new PedidoId(v); }
-  equals(o: PedidoId) { return this.valor === o.valor; }
+```php
+<?php
+use Ramsey\Uuid\Uuid;
+
+final class PedidoId
+{
+    private function __construct(public readonly string $valor) {}
+
+    public static function nuevo(): self
+    {
+        return new self(Uuid::uuid4()->toString());
+    }
+
+    public static function de(string $valor): self
+    {
+        if ($valor === '') {
+            throw new InvalidArgumentException('PedidoId vacío');
+        }
+        return new self($valor);
+    }
+
+    public function equals(PedidoId $otro): bool
+    {
+        return $this->valor === $otro->valor;
+    }
 }
-// obtener(pedidoId: PedidoId, clienteId: ClienteId) → invertirlos no compila
+// obtener(PedidoId $pedidoId, ClienteId $clienteId) → invertirlos lanza TypeError
 ```
 
 ## 3. Agregado y Aggregate Root
@@ -162,21 +221,41 @@ classDiagram
   Pedido ..> Cliente : solo por ClienteId
 ```
 
-```ts
-class Pedido {                                   // Aggregate Root
-  private lineas: LineaPedido[] = [];
-  private eventos: DomainEvent[] = [];
-  constructor(readonly id: PedidoId, readonly clienteId: ClienteId) {} // otro agregado: solo su id
+```php
+<?php
+final class Pedido                                    // Aggregate Root
+{
+    /** @var list<LineaPedido> */
+    private array $lineas = [];
+    /** @var list<DomainEvent> */
+    private array $eventos = [];
 
-  añadirLinea(productoId: ProductoId, cantidad: number, precio: Dinero) {
-    if (this.lineas.length >= 50) throw new Error("Máximo 50 líneas"); // invariante del agregado
-    this.lineas.push(new LineaPedido(LineaId.nuevo(), productoId, cantidad, precio));
-  }
-  confirmar() {
-    if (this.lineas.length === 0) throw new Error("Pedido vacío");
-    this.eventos.push(new PedidoConfirmado(this.id, this.clienteId, new Date()));
-  }
-  get lineasPedido(): readonly LineaPedido[] { return this.lineas; } // solo lectura hacia fuera
+    public function __construct(
+        public readonly PedidoId $id,
+        public readonly ClienteId $clienteId,         // otro agregado: solo su id
+    ) {}
+
+    public function añadirLinea(ProductoId $productoId, int $cantidad, Dinero $precio): void
+    {
+        if (count($this->lineas) >= 50) {
+            throw new DomainException('Máximo 50 líneas');   // invariante del agregado
+        }
+        $this->lineas[] = new LineaPedido(LineaId::nuevo(), $productoId, $cantidad, $precio);
+    }
+
+    public function confirmar(): void
+    {
+        if ($this->lineas === []) {
+            throw new DomainException('Pedido vacío');
+        }
+        $this->eventos[] = new PedidoConfirmado($this->id, $this->clienteId, $this->total(), new DateTimeImmutable());
+    }
+
+    /** @return list<LineaPedido> copia: el array se pasa por valor, no se puede mutar desde fuera */
+    public function lineas(): array
+    {
+        return $this->lineas;
+    }
 }
 ```
 
@@ -212,49 +291,87 @@ Citas clave:
 
 Patrón de la guía .NET de Microsoft: **el agregado solo registra el evento** (*"the only thing that the AddDomainEvent method is doing is adding an event to the list. No event is dispatched yet"*). Se despachan al guardar, en el `SaveChanges`.
 
-```ts
+```php
+<?php
 // 1) Dominio: el evento es un hecho inmutable en pasado
-class PedidoConfirmado implements DomainEvent {
-  constructor(readonly pedidoId: PedidoId, readonly clienteId: ClienteId,
-              readonly total: Dinero, readonly ocurridoEn: Date) {}
+final readonly class PedidoConfirmado implements DomainEvent
+{
+    public function __construct(
+        public PedidoId $pedidoId,
+        public ClienteId $clienteId,
+        public Dinero $total,
+        public DateTimeImmutable $ocurridoEn,
+    ) {}
 }
 
 // 2) Dominio: la base de las entidades acumula eventos, NO los despacha
-abstract class AggregateRoot {
-  private eventos: DomainEvent[] = [];
-  protected registrar(e: DomainEvent) { this.eventos.push(e); }
-  extraerEventos(): DomainEvent[] { const e = this.eventos; this.eventos = []; return e; }
+abstract class AggregateRoot
+{
+    /** @var list<DomainEvent> */
+    private array $eventos = [];
+
+    protected function registrar(DomainEvent $evento): void
+    {
+        $this->eventos[] = $evento;
+    }
+
+    /** @return list<DomainEvent> */
+    public function extraerEventos(): array
+    {
+        $eventos = $this->eventos;
+        $this->eventos = [];
+        return $eventos;
+    }
 }
 
 // 3) Dominio: el agregado lo levanta como parte de su comportamiento
-class Pedido extends AggregateRoot {
-  confirmar() {
-    if (this.lineas.length === 0) throw new Error("Pedido vacío");
-    this.estado = "CONFIRMADO";
-    this.registrar(new PedidoConfirmado(this.id, this.clienteId, this.total(), new Date()));
-  }
+final class Pedido extends AggregateRoot
+{
+    public function confirmar(): void
+    {
+        if ($this->lineas === []) {
+            throw new DomainException('Pedido vacío');
+        }
+        $this->estado = EstadoPedido::Confirmado;
+        $this->registrar(new PedidoConfirmado($this->id, $this->clienteId, $this->total(), new DateTimeImmutable()));
+    }
 }
 
 // 4) Infraestructura: el Unit of Work despacha en memoria ANTES del commit
 //    (opción por defecto de la guía .NET: los efectos laterales entran en la misma transacción)
-class UnitOfWork {
-  async guardar(agregados: AggregateRoot[]) {
-    await this.db.transaction(async tx => {
-      for (const a of agregados)
-        for (const e of a.extraerEventos())
-          await this.dispatcher.despachar(e, tx);   // handlers en el mismo proceso
-      await tx.persistir(agregados);                 // si falla, rollback de todo
-    });
-  }
+final class UnitOfWork
+{
+    public function __construct(private PDO $db, private EventDispatcher $dispatcher) {}
+
+    /** @param list<AggregateRoot> $agregados */
+    public function guardar(array $agregados): void
+    {
+        $this->db->beginTransaction();
+        try {
+            foreach ($agregados as $agregado) {
+                foreach ($agregado->extraerEventos() as $evento) {
+                    $this->dispatcher->despachar($evento);   // handlers en el mismo proceso
+                }
+            }
+            $this->persistir($agregados);
+            $this->db->commit();
+        } catch (Throwable $e) {
+            $this->db->rollBack();                           // si falla, rollback de todo
+            throw $e;
+        }
+    }
 }
 
 // 5) Aplicación: handler del evento de dominio (cero, uno o varios por evento)
-class ReservarStockAlConfirmarPedido implements DomainEventHandler<PedidoConfirmado> {
-  constructor(private inventario: InventarioRepository) {}
-  async handle(e: PedidoConfirmado, tx: Tx) {
-    const inv = await this.inventario.porPedido(e.pedidoId, tx);
-    inv.reservar(e.pedidoId);   // otro agregado, MISMO bounded context
-  }
+final class ReservarStockAlConfirmarPedido implements DomainEventHandler
+{
+    public function __construct(private InventarioRepository $inventario) {}
+
+    public function __invoke(PedidoConfirmado $evento): void
+    {
+        $inventario = $this->inventario->porPedido($evento->pedidoId);
+        $inventario->reservar($evento->pedidoId);   // otro agregado, MISMO bounded context
+    }
 }
 ```
 
@@ -264,52 +381,75 @@ class ReservarStockAlConfirmarPedido implements DomainEventHandler<PedidoConfirm
 
 Problema (microservices.io): *"How to atomically update the database and send messages to a message broker?"* 2PC no es opción y publicar dentro o después de la transacción no es fiable. Solución: **guardar el mensaje en una tabla outbox en la misma transacción** que los datos de negocio; un **message relay** separado lo envía al broker (por *polling publisher* o *transaction log tailing*). El relay puede enviar un mensaje más de una vez, así que **los consumidores deben ser idempotentes**.
 
-```ts
+```php
+<?php
+use Ramsey\Uuid\Uuid;
+
 // 1) Contrato público: primitivos, versionado, sin tipos del dominio
-interface PedidoConfirmadoIntegrationEvent {
-  eventId: string;          // para idempotencia en el consumidor
-  type: "ventas.pedido-confirmado.v1";
-  occurredAt: string;
-  pedidoId: string;
-  clienteId: string;
-  total: { cantidad: number; moneda: string };
+final readonly class PedidoConfirmadoIntegrationEvent
+{
+    public const TYPE = 'ventas.pedido-confirmado.v1';
+
+    public function __construct(
+        public string $eventId,        // para idempotencia en el consumidor
+        public string $occurredAt,
+        public string $pedidoId,
+        public string $clienteId,
+        /** @var array{cantidad: float, moneda: string} */
+        public array $total,
+    ) {}
 }
 
 // 2) Aplicación: un handler del DOMAIN event traduce a INTEGRATION event
 //    y lo escribe en el outbox, dentro de la MISMA transacción
-class PublicarPedidoConfirmadoHaciaFuera implements DomainEventHandler<PedidoConfirmado> {
-  constructor(private outbox: Outbox) {}
-  async handle(e: PedidoConfirmado, tx: Tx) {
-    await this.outbox.añadir({
-      eventId: crypto.randomUUID(),
-      type: "ventas.pedido-confirmado.v1",
-      occurredAt: e.ocurridoEn.toISOString(),
-      pedidoId: e.pedidoId.valor,
-      clienteId: e.clienteId.valor,
-      total: { cantidad: e.total.cantidad, moneda: e.total.moneda },
-    }, tx);                                 // INSERT INTO outbox ... (no se envía nada aún)
-  }
+final class PublicarPedidoConfirmadoHaciaFuera implements DomainEventHandler
+{
+    public function __construct(private Outbox $outbox) {}
+
+    public function __invoke(PedidoConfirmado $evento): void
+    {
+        $this->outbox->añadir(PedidoConfirmadoIntegrationEvent::TYPE, new PedidoConfirmadoIntegrationEvent(
+            eventId: Uuid::uuid4()->toString(),
+            occurredAt: $evento->ocurridoEn->format(DATE_ATOM),
+            pedidoId: $evento->pedidoId->valor,
+            clienteId: $evento->clienteId->valor,
+            total: ['cantidad' => $evento->total->cantidad, 'moneda' => $evento->total->moneda],
+        ));                                    // INSERT INTO outbox ... (no se envía nada aún)
+    }
 }
 
-// 3) Infraestructura: message relay (polling publisher), proceso aparte
-class OutboxRelay {
-  async tick() {
-    const pendientes = await this.db.query("SELECT * FROM outbox WHERE enviado_en IS NULL ORDER BY id LIMIT 100");
-    for (const m of pendientes) {
-      await this.broker.publicar(m.type, m.payload);   // solo llega aquí lo ya commiteado
-      await this.db.exec("UPDATE outbox SET enviado_en = now() WHERE id = $1", [m.id]);
-      // si cae entre publicar y UPDATE → reenvío → el consumidor debe ser idempotente
+// 3) Infraestructura: message relay (polling publisher), proceso aparte (p. ej. un comando de consola)
+final class OutboxRelay
+{
+    public function __construct(private PDO $db, private Broker $broker) {}
+
+    public function tick(): void
+    {
+        $pendientes = $this->db
+            ->query('SELECT * FROM outbox WHERE enviado_en IS NULL ORDER BY id LIMIT 100')
+            ->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($pendientes as $m) {
+            $this->broker->publicar($m['type'], $m['payload']);   // solo llega aquí lo ya commiteado
+            $this->db->prepare('UPDATE outbox SET enviado_en = now() WHERE id = ?')->execute([$m['id']]);
+            // si cae entre publicar y UPDATE → reenvío → el consumidor debe ser idempotente
+        }
     }
-  }
 }
 
 // 4) Otro bounded context (Facturación): consumidor idempotente
-class EmitirFacturaAlConfirmarPedido {
-  async on(msg: PedidoConfirmadoIntegrationEvent) {
-    if (await this.procesados.existe(msg.eventId)) return;   // idempotencia
-    await this.facturas.emitirPara(msg.pedidoId, msg.total);
-    await this.procesados.marcar(msg.eventId);
-  }
+final class EmitirFacturaAlConfirmarPedido
+{
+    public function __construct(private MensajesProcesados $procesados, private Facturas $facturas) {}
+
+    public function __invoke(PedidoConfirmadoIntegrationEvent $msg): void
+    {
+        if ($this->procesados->existe($msg->eventId)) {
+            return;                                                 // idempotencia
+        }
+        $this->facturas->emitirPara($msg->pedidoId, $msg->total);
+        $this->procesados->marcar($msg->eventId);
+    }
 }
 ```
 
@@ -364,23 +504,29 @@ Resumen: **Domain Event = qué pasó dentro de mi modelo, en memoria. Integratio
 
 Regla práctica: si la clase toma **decisiones de negocio** → dominio. Si solo **coordina** (cargar, llamar, guardar, publicar) → aplicación.
 
-```ts
+```php
+<?php
 // Domain Service: regla que cruza dos agregados
-class ServicioTransferencia {
-  transferir(origen: Cuenta, destino: Cuenta, importe: Dinero) {
-    origen.retirar(importe);   // cada agregado protege sus invariantes
-    destino.ingresar(importe);
-  }
+final class ServicioTransferencia
+{
+    public function transferir(Cuenta $origen, Cuenta $destino, Dinero $importe): void
+    {
+        $origen->retirar($importe);    // cada agregado protege sus invariantes
+        $destino->ingresar($importe);
+    }
 }
 
 // Application Service: orquesta el caso de uso, sin reglas de negocio
-class ConfirmarPedidoHandler {
-  constructor(private pedidos: PedidoRepository) {}
-  async ejecutar(cmd: { pedidoId: string }) {
-    const pedido = await this.pedidos.porId(PedidoId.de(cmd.pedidoId));
-    pedido.confirmar();                 // la decisión vive en el dominio
-    await this.pedidos.guardar(pedido); // guarda y despacha sus domain events (ver §4)
-  }
+final class ConfirmarPedidoHandler
+{
+    public function __construct(private PedidoRepository $pedidos) {}
+
+    public function __invoke(ConfirmarPedido $cmd): void
+    {
+        $pedido = $this->pedidos->porId(PedidoId::de($cmd->pedidoId));
+        $pedido->confirmar();                 // la decisión vive en el dominio
+        $this->pedidos->guardar($pedido);     // guarda y despacha sus domain events (ver §4)
+    }
 }
 ```
 
@@ -394,10 +540,12 @@ Fowler, en su clasificación, lo pone como ejemplo de **Service**, no de entidad
 
 Capa: la **interfaz** pertenece al dominio (habla su lenguaje); la **implementación** (SQL, ORM) va en infraestructura. *Este reparto de capas es la práctica habitual derivada de la Layered Architecture de Evans; Evans no lo formula con estas palabras en la Reference.*
 
-```ts
-interface PedidoRepository {            // dominio
-  porId(id: PedidoId): Promise<Pedido>;  // devuelve el agregado completo
-  guardar(p: Pedido): Promise<void>;
+```php
+<?php
+interface PedidoRepository             // dominio
+{
+    public function porId(PedidoId $id): Pedido;   // devuelve el agregado completo
+    public function guardar(Pedido $pedido): void;
 }
 // NO existe LineaPedidoRepository: LineaPedido no es raíz.
 ```
@@ -406,14 +554,22 @@ interface PedidoRepository {            // dominio
 
 **Evans:** *"When creation of an entire, internally consistent aggregate, or a large value object, becomes complicated or reveals too much of the internal structure, factories provide encapsulation."* Crea el agregado entero como unidad, cumpliendo sus invariantes. Puede ser un método estático, un método en otro agregado o una clase aparte.
 
-```ts
-class Pedido {
-  static crear(clienteId: ClienteId, lineas: NuevaLinea[]): Pedido {  // factory method
-    if (lineas.length === 0) throw new Error("Un pedido nace con al menos una línea");
-    const p = new Pedido(PedidoId.nuevo(), clienteId);
-    lineas.forEach(l => p.añadirLinea(l.productoId, l.cantidad, l.precio));
-    return p;
-  }
+```php
+<?php
+final class Pedido
+{
+    /** @param non-empty-list<NuevaLinea> $lineas */
+    public static function crear(ClienteId $clienteId, array $lineas): self   // factory method
+    {
+        if ($lineas === []) {
+            throw new DomainException('Un pedido nace con al menos una línea');
+        }
+        $pedido = new self(PedidoId::nuevo(), $clienteId);
+        foreach ($lineas as $l) {
+            $pedido->añadirLinea($l->productoId, $l->cantidad, $l->precio);
+        }
+        return $pedido;
+    }
 }
 ```
 
@@ -521,3 +677,4 @@ sequenceDiagram
 - Cesar de la Torre (Microsoft), [Using Domain Events within a .NET Core Microservice (2017)](https://devblogs.microsoft.com/cesardelatorre/using-domain-events-within-a-net-core-microservice/)
 - Andrew Lock, [Using strongly-typed entity IDs to avoid primitive obsession, Part 1](https://andrewlock.net/using-strongly-typed-entity-ids-to-avoid-primitive-obsession-part-1)
 - Chris Richardson, [Pattern: Transactional outbox](https://microservices.io/patterns/data/transactional-outbox)
+- PHP manual, [Type declarations](https://www.php.net/manual/en/language.types.declarations.php)
