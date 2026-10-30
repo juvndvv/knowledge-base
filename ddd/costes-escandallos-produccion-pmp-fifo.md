@@ -52,6 +52,21 @@ flowchart LR
     X -. "PMP" .-> P["120 × 10,67 €"]
 ```
 
+## ¿De dónde salen las capas FIFO?
+
+Cada **entrada** de stock crea una capa: SKU.io crea las capas FIFO al recibir el pedido de compra ([SKU.io](https://docs.sku.io/guides/orders/purchase-orders/receive-stock-against-a-po)). Generalizándolo a todas las entradas (esta tabla es mía):
+
+| Origen de la entrada | Coste unitario de la capa | Referencia |
+|---|---|---|
+| Recepción de compra | Precio de la línea del pedido ÷ factor del formato (en unidad de stock) | `pedidoId:lineaId` + recepción |
+| Producción (elaborado) | Coste total consumido (+ directos) ÷ cantidad producida | `ordenProduccionId` |
+| Stock inicial / regularización positiva | Coste declarado en la carga o en el recuento (p. ej. el último coste conocido) | `inventarioId` |
+| Traspaso entre almacenes | La capa viaja con su coste original | `traspasoId` |
+
+Persistencia: una tabla de capas por `(productoId, almacenId)` con `fechaEntrada`, `cantidadRestante`, `costeUnitario` y `refOrigen`. Se carga con el agregado `StockArticulo`, ordenada por fecha. Otra opción es reconstruirlas reproduciendo el historial de movimientos, al estilo del event sourcing de [Salesforce](https://engineering.salesforce.com/event-sourcing-for-an-inventory-availability-solution-3cc0daf5a742).
+
+Si la **factura** llega con otro precio (ver la nota de facturas), se corrige el coste de la capa de esa recepción en la parte que aún queda. La parte ya consumida genera un **ajuste de coste** aparte. Esto es recomendación mía.
+
 ## Modelo (TypeScript)
 
 ```ts
