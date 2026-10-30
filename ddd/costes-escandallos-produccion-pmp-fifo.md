@@ -2,12 +2,15 @@
 title: "Costes: valoración de stock (PMP, FIFO), escandallos y producciones"
 topic: ddd
 subtopic: diseño-táctico
-tags: [ddd, coste, valoracion-de-existencias, pmp, precio-medio-ponderado, fifo, capas-de-coste, escandallo, receta, sub-receta, produccion, elaboracion, rendimiento, merma, coste-teorico, coste-real, food-cost, inventario, cqrs, proyeccion, strategy, pgc]
+tags: [ddd, coste, valoracion-de-existencias, pmp, precio-medio-ponderado, fifo, capas-de-coste, escandallo, receta, sub-receta, produccion, elaboracion, rendimiento, merma, coste-teorico, coste-real, food-cost, inventario, cqrs, proyeccion, strategy, pgc, consumo, descuento-por-ventas, backflush, depletion, tpv, recuento]
 aliases: [weighted average cost, WAC, moving average, FIFO layers, cost layers, recipe costing, theoretical food cost, actual food cost, yield, edible portion, EP cost, AP cost, production cost, coste de producción, NRV 10ª, norma de valoración existencias]
 sources:
   - PGC, Norma de registro y valoración 10ª "Existencias" (texto en SuperContable) — https://www.supercontable.com/informacion/Contabilidad/Norma_Valoracion_10a.Plan_General_Contabilidad.Existencias.html
   - Cleverence, "Inventory weighted average cost: perpetual vs periodic" — https://www.cleverence.com/articles/for-business/inventory-weighted-average-cost-4829/
   - SKU.io, "Receive stock against a PO" (capas FIFO al recibir) — https://docs.sku.io/guides/orders/purchase-orders/receive-stock-against-a-po
+  - CrunchTime, "Determining Product Depletion and Recipe Costing" — https://help.crunchtime.com/EM/en/WebHelp_EMw/Content/EM_POSdepletion/Recipe_Depletion_and_Costing.htm
+  - CrunchTime, "Auto-Daily Prep for Sales Depletion" — https://help.crunchtime.com/EM/en/WebHelp_EMw/Content/EM_Setup1/_Auto_Daily_Prep.htm
+  - AccountingTools, "Backflush accounting" — https://www.accountingtools.com/articles/what-is-backflush-accounting.html
   - Meez, "Actual vs theoretical food costs" — https://getmeez.com/blog/actual-vs-theoretical-food-costs
   - Supy, "Restaurant yield costing" — https://supy.io/blog/learn-restaurant-yield-costing
 created: 2026-10-29
@@ -171,6 +174,60 @@ sequenceDiagram
 ```
 
 Consistencia: Vernon pide un agregado por transacción, así que consumir N ingredientes y dar entrada al elaborado son varias transacciones. Se orquesta con eventos (`ProduccionIniciada` → consumos → `ElaboradoRecibido`) y es idempotente por `ordenId` (ver la nota de flujo). Un único `consumirYProducir` transaccional en Inventario es una alternativa pragmática si todo vive en el mismo BC y la misma BD. Es un trade-off: elegirlo sería decisión tuya.
+
+## ¿De dónde sale el consumo? (ventas, escandallo y recuento)
+
+No todo el mundo produce, así que el consumo puede tener **tres orígenes**:
+
+1. **Venta en el TPV + escandallo** (*depletion* o *backflush*). CrunchTime lo configura **por receta** ([CrunchTime, Recipe depletion](https://help.crunchtime.com/EM/en/WebHelp_EMw/Content/EM_POSdepletion/Recipe_Depletion_and_Costing.htm)):
+   - **Componente:** *"the individual recipe components equal to a single portion of the recipe will be depleted from inventory"*. Se descuentan los ingredientes.
+   - **Artículo:** *"a single portion of the recipe will be depleted from inventory as a finished product"*. Se descuenta el elaborado como producto terminado. Es obligatorio cuando la receta llega hecha (comprada a un obrador central, *"To Order"*).
+   - Si la receta se produce en el local, la configuración decide si los componentes se descuentan **al producir o al vender**. CrunchTime incluso crea la producción automáticamente a partir de las ventas cuando falta stock del elaborado ([Auto-Daily Prep](https://help.crunchtime.com/EM/en/WebHelp_EMw/Content/EM_Setup1/_Auto_Daily_Prep.htm)).
+2. **Producción explícita:** solo para quien produce lotes (ver la sección de producción).
+3. **Recuento físico:** consumo real = inicial + compras − final (Meez). Es la única fuente para quien no tiene TPV integrado, y la que capta mermas y robos.
+
+Limitación del descuento por escandallo ([AccountingTools](https://www.accountingtools.com/articles/what-is-backflush-accounting.html)): si el escandallo o el conteo están mal, *"an incorrect count will relieve an incorrect amount of components"*. Las mermas no planificadas *"will remain in the inventory records"*, así que hay que registrarlas aparte o aflorarlas en el recuento.
+
+Regla práctica (mía): por defecto, **descontar componentes**, explotando sub-recetas de forma recursiva hasta llegar a artículos con stock. **Descontar el artículo** solo cuando el elaborado tenga stock propio, porque se compra hecho o se produce por lotes.
+
+```mermaid
+flowchart TB
+    TPV["Ventas/TPV<br/>VentaRegistrada: 10 × Sangría"] --> CO["Cocina<br/>explota escandallo vigente"]
+    CO -->|"modo Componente"| C1["vino 1,5 l · fruta 0,8 kg · azúcar 0,1 kg"]
+    CO -->|"modo Artículo (elaborado con stock)"| C2["10 raciones de Sangría"]
+    C1 --> INV["Inventario<br/>StockArticulo.consumir() · coste PMP/FIFO"]
+    C2 --> INV
+    REC["Recuento físico"] --> REG["Regularización:<br/>real − teórico = merma/varianza"]
+    REG --> INV
+```
+
+```ts
+// Cocina: traduce una venta a consumos (ACL entre Ventas e Inventario)
+class ExplotarVentaEnConsumos {
+  constructor(private recetas: RecetaRepository, private bus: Outbox) {}
+  async handle(e: VentaRegistrada) {                       // idempotente por ticketId
+    const consumos: ConsumoTeorico[] = [];
+    for (const l of e.lineas) {
+      const receta = await this.recetas.vigenteEn(l.platoId, e.fecha); // versión al vender
+      receta.explotar(l.cantidad, consumos);              // recursivo según el modo de cada sub-receta
+    }
+    await this.bus.añadir(new ConsumosTeoricosCalculados(e.ticketId, consumos));
+  }
+}
+
+class Receta {
+  explotar(raciones: number, out: ConsumoTeorico[]) {
+    if (this.modoDescuento === "ARTICULO") {               // tiene stock propio
+      out.push({ articuloId: this.articuloId, cantidad: new Cantidad(raciones, this.unidadRacion) });
+      return;
+    }
+    for (const c of this.componentes) {
+      const q = c.cantidad.por(raciones / this.raciones);
+      c.esSubreceta ? c.subreceta.explotar(q.valor, out) : out.push({ articuloId: c.articuloId, cantidad: q });
+    }
+  }
+}
+```
 
 ## Coste real vs. teórico
 
