@@ -3,7 +3,7 @@ title: "CQRS: qué es, cuándo tiene sentido y niveles de separación"
 topic: cqrs
 subtopic: fundamentos
 tags: [cqrs, cqs, php, command, query, command-handler, query-handler, read-model, write-model, modelo-de-lectura, modelo-de-escritura, proyeccion, vista-materializada, consistencia-eventual, outbox, event-sourcing, task-based-ui, bounded-context, reporting-database]
-aliases: [Command Query Responsibility Segregation, CQRS por bounded context, CQRS en todos los contextos, Command Query Separation, separación de comandos y consultas, segregación de responsabilidades, read side, write side, lado de lectura, lado de escritura, simplified CQRS, CQRS simplificado, persistent view model, materialized view, projection, stale data, datos obsoletos, eventual consistency, tipos de CQRS, niveles de CQRS]
+aliases: [Command Query Responsibility Segregation, ReadRepository, read repository, repositorio de lectura, query service, finder, CQRS por bounded context, CQRS en todos los contextos, Command Query Separation, separación de comandos y consultas, segregación de responsabilidades, read side, write side, lado de lectura, lado de escritura, simplified CQRS, CQRS simplificado, persistent view model, materialized view, projection, stale data, datos obsoletos, eventual consistency, tipos de CQRS, niveles de CQRS]
 sources:
   - Fowler, bliki "CQRS" — https://martinfowler.com/bliki/CQRS.html
   - Fowler, bliki "CommandQuerySeparation" — https://martinfowler.com/bliki/CommandQuerySeparation.html
@@ -13,6 +13,8 @@ sources:
   - Udi Dahan, "Clarified CQRS" (2009) — https://udidahan.com/2009/12/09/clarified-cqrs/
   - Dudycz, "CQRS facts and myths explained" (2021) — https://event-driven.io/en/cqrs_facts_and_myths_explained/
   - Dudycz, "Can command return a value?" — https://event-driven.io/en/can_command_return_a_value/
+  - Comartin, "Should you use the Repository Pattern? With CQRS, Yes and No!" (2021) — https://codeopinion.com/should-you-use-the-repository-pattern-with-cqrs-yes-and-no/
+  - Microsoft, "Implement reads/queries in a CQRS microservice" — https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/cqrs-microservice-reads
   - Comartin, "CQRS Myths: 3 Most Common Misconceptions" (2020) — https://codeopinion.com/?p=7267
   - Kurrent, "CQRS: Dispelling the Myths" (2024) — https://kurrentdb.kurrent.io/blog/cqrs-dispelling-the-myths/
 created: 2026-10-30
@@ -233,6 +235,78 @@ final class ListarPedidosDeClienteHandler
 - **Gana:** el agregado deja de tener getters para pantallas; las consultas se optimizan con SQL libre; cada handler es una *vertical slice* (*"Each command/query handler is a separate silo"*, Dudycz).
 - **No cambia:** una sola BD, consistencia inmediata, sin mensajería.
 - **Límite:** si la consulta necesita muchos joins o cálculos caros en cada lectura, pasar al nivel 2.
+
+## ¿Repositorios de lectura (ReadRepository)? Repository en escritura, query service en lectura
+
+En CQRS el **Repository** de DDD se queda en el **lado de escritura**: carga y guarda **agregados** para aplicar comandos. En el lado de lectura no hay agregados, así que lo que se usa es un objeto de consultas que devuelve DTOs/read models.
+
+- Comartin: *"on the Command side I'm going to use a Repository to build up and return an Aggregate"*; en consultas, *"since I'm not making any state changes, I do not need an Aggregate"*. Resumen: *"an Aggregate is required for Commands, not Queries."* ([Should you use the Repository Pattern? With CQRS, Yes and No!](https://codeopinion.com/should-you-use-the-repository-pattern-with-cqrs-yes-and-no/), 2021)
+- Microsoft (eShopOnContainers) define una interfaz `IOrderQueries` con su implementación `OrderQueries` que consulta con SQL directo (Dapper) y devuelve **ViewModels**: *"the aggregates boundaries and constraints are ignored and you're free to query any table and column you might need."* Los ViewModels pueden *"join data from multiple entities or tables ... or even across multiple aggregates"* ([Implement reads/queries in a CQRS microservice](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/cqrs-microservice-reads)).
+- Vernon, en *Implementing DDD* (cap. 4, CQRS), parte del problema de que resolver pantallas solo con repositorios *"can be less than desirable"* ([O'Reilly](https://www.oreilly.com/library/view/implementing-domain-driven-design/9780133039900/ch04lev1sec6.html)).
+
+| | `PedidoRepository` (escritura) | `PedidoQueries` / "ReadRepository" (lectura) |
+|---|---|---|
+| Devuelve | Agregado `Pedido` | DTOs (`PedidoResumen`, `PedidoDetalle`) |
+| Métodos | `porId`, `guardar` | Uno por necesidad de pantalla: `listarDeCliente`, `detalle`, `buscar` |
+| Respeta límites de agregado | Sí | No: puede cruzar tablas y agregados |
+| Lo usa | Command handlers | Query handlers |
+| Interfaz en | Dominio | Aplicación (es un puerto de la capa de aplicación, no un concepto del dominio) |
+
+**Sobre el nombre** (opinión mía): llamarlo `ReadRepository` funciona, pero invita a dos errores: devolver agregados para leer y copiar la forma CRUD (`findAll`, `findBy`) del repositorio de escritura. Nombres como `PedidoQueries` (Microsoft) o `PedidoFinder` dejan más claro que es otra cosa. Lo importante no es el nombre sino que **devuelva DTOs** y **no lo usen los comandos**.
+
+```mermaid
+flowchart LR
+    subgraph Escritura
+        CH["ConfirmarPedidoHandler"] --> REPO["PedidoRepository<br/>(interfaz en Dominio)"]
+        REPO --> AGG["Pedido (agregado)"]
+    end
+    subgraph Lectura
+        QH["ListarPedidosDeClienteHandler"] --> QS["PedidoQueries<br/>(interfaz en Aplicación)"]
+        QS --> DTO["PedidoResumen (DTO)"]
+    end
+    REPO -. "impl. Doctrine/PDO" .-> DB[(BD)]
+    QS -. "impl. SQL directo" .-> DB
+```
+
+```php
+<?php
+// Aplicación: puerto de lectura, devuelve DTOs
+interface PedidoQueries
+{
+    /** @return list<PedidoResumen> */
+    public function listarDeCliente(string $clienteId, int $pagina): array;
+
+    public function detalle(string $pedidoId): ?PedidoDetalle;
+}
+
+// Infraestructura: SQL directo (nivel 1) o tabla de proyección (nivel 2+)
+final class PdoPedidoQueries implements PedidoQueries
+{
+    public function __construct(private PDO $db) {}
+
+    public function listarDeCliente(string $clienteId, int $pagina): array
+    {
+        $stmt = $this->db->prepare('SELECT id, estado, num_lineas, total, fecha FROM pedidos_resumen WHERE cliente_id = ? ORDER BY fecha DESC LIMIT 20 OFFSET ?');
+        $stmt->execute([$clienteId, ($pagina - 1) * 20]);
+        return $stmt->fetchAll(PDO::FETCH_CLASS, PedidoResumen::class);
+    }
+
+    public function detalle(string $pedidoId): ?PedidoDetalle { /* ... */ }
+}
+
+// El query handler depende del puerto, no de PDO: se puede testear con un fake
+final class ListarPedidosDeClienteHandler
+{
+    public function __construct(private PedidoQueries $queries) {}
+
+    public function __invoke(ListarPedidosDeCliente $q): array
+    {
+        return $this->queries->listarDeCliente($q->clienteId, $q->pagina);
+    }
+}
+```
+
+Ventaja práctica de la interfaz (opinión mía): al pasar de nivel 1 (SQL con joins sobre las tablas de escritura) a nivel 2 o 3 (tabla de proyección u otro almacén) solo cambia la implementación; los query handlers no se tocan. Si el contexto es pequeño, inyectar `PDO` directamente en el handler (como en el ejemplo de nivel 1) también es válido; Microsoft, en cambio, sí pone la consulta detrás de `IOrderQueries`.
 
 ## Nivel 2: modelo de lectura propio en la misma base de datos
 
@@ -497,3 +571,6 @@ Dos matices prácticos (**opinión mía**, no de las fuentes):
 - Oskar Dudycz, "Can command return a value?" — https://event-driven.io/en/can_command_return_a_value/
 - Derek Comartin, "CQRS Myths: 3 Most Common Misconceptions" (2020) — https://codeopinion.com/?p=7267
 - Kurrent, "CQRS: Dispelling the Myths" (2024) — https://kurrentdb.kurrent.io/blog/cqrs-dispelling-the-myths/
+- Derek Comartin, "Should you use the Repository Pattern? With CQRS, Yes and No!" (2021) — https://codeopinion.com/should-you-use-the-repository-pattern-with-cqrs-yes-and-no/
+- Microsoft, "Implement reads/queries in a CQRS microservice" — https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/cqrs-microservice-reads
+- Vernon, "Implementing Domain-Driven Design", cap. 4 (CQRS) — https://www.oreilly.com/library/view/implementing-domain-driven-design/9780133039900/ch04lev1sec6.html
