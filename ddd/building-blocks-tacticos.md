@@ -2,7 +2,7 @@
 title: "DDD táctico: building blocks (entidad, value object, agregado y demás)"
 topic: ddd
 subtopic: diseño-táctico
-tags: [ddd, entidad, value-object, agregado, aggregate-root, domain-service, application-service, domain-event, integration-event, outbox, repository, factory, module, invariante, consistencia]
+tags: [ddd, strongly-typed-id, primitive-obsession, entidad, value-object, agregado, aggregate-root, domain-service, application-service, domain-event, integration-event, outbox, repository, factory, module, invariante, consistencia]
 aliases: [entity, value object, aggregate, aggregate root, domain event, repositorio, factoría, módulo, servicio de dominio, servicio de aplicación]
 sources:
   - Evans, "Domain-Driven Design Reference" (2015)
@@ -82,6 +82,20 @@ flowchart LR
   Q -- "Quién: tiene continuidad,<br/>cambia con el tiempo" --> E[Entidad]
   Q -- "Qué: lo definen sus atributos,<br/>intercambiable" --> V[Value Object]
   V -.-> N[Por defecto, empieza por VO<br/>— Microsoft]
+```
+
+### Value Objects de identidad: *Strongly-Typed IDs*
+
+Un VO que envuelve el identificador de una entidad (`PedidoId`, `ClienteId`) se suele llamar **Strongly-Typed ID** (o *typed ID*). Evita la *primitive obsession*: *"The problem of using primitive values to represent domain concepts is called primitive obsession."* (Andrew Lock). Con `Guid`/`string` el compilador no detecta que pasas un `userId` donde va un `orderId`; con tipos distintos, no compila. Vernon usa este tipo de identidades (`ProductId`) para referenciar otros agregados por identidad.
+
+```ts
+class PedidoId {
+  private constructor(readonly valor: string) {}
+  static nuevo() { return new PedidoId(crypto.randomUUID()); }
+  static de(v: string) { if (!v) throw new Error("PedidoId vacío"); return new PedidoId(v); }
+  equals(o: PedidoId) { return this.valor === o.valor; }
+}
+// obtener(pedidoId: PedidoId, clienteId: ClienteId) → invertirlos no compila
 ```
 
 ## 3. Agregado y Aggregate Root
@@ -490,4 +504,5 @@ sequenceDiagram
 - Milan Jovanović, [Domain Events vs Integration Events in .NET](https://milanjovanovic.tech/blog/domain-events-vs-integration-events) (handler de domain event que traduce y escribe en outbox)
 - Milan Jovanović, [Event-Driven Communication Between Modules in .NET](https://milanjovanovic.tech/blog/event-driven-communication-modules)
 - Cesar de la Torre (Microsoft), [Using Domain Events within a .NET Core Microservice (2017)](https://devblogs.microsoft.com/cesardelatorre/using-domain-events-within-a-net-core-microservice/)
+- Andrew Lock, [Using strongly-typed entity IDs to avoid primitive obsession, Part 1](https://andrewlock.net/using-strongly-typed-entity-ids-to-avoid-primitive-obsession-part-1)
 - Chris Richardson, [Pattern: Transactional outbox](https://microservices.io/patterns/data/transactional-outbox)
