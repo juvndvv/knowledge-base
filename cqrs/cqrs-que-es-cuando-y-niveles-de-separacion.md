@@ -3,7 +3,7 @@ title: "CQRS: qué es, cuándo tiene sentido y niveles de separación"
 topic: cqrs
 subtopic: fundamentos
 tags: [cqrs, cqs, php, command, query, command-handler, query-handler, read-model, write-model, modelo-de-lectura, modelo-de-escritura, proyeccion, vista-materializada, consistencia-eventual, outbox, event-sourcing, task-based-ui, bounded-context, reporting-database]
-aliases: [Command Query Responsibility Segregation, Command Query Separation, separación de comandos y consultas, segregación de responsabilidades, read side, write side, lado de lectura, lado de escritura, simplified CQRS, CQRS simplificado, persistent view model, materialized view, projection, stale data, datos obsoletos, eventual consistency, tipos de CQRS, niveles de CQRS]
+aliases: [Command Query Responsibility Segregation, CQRS por bounded context, CQRS en todos los contextos, Command Query Separation, separación de comandos y consultas, segregación de responsabilidades, read side, write side, lado de lectura, lado de escritura, simplified CQRS, CQRS simplificado, persistent view model, materialized view, projection, stale data, datos obsoletos, eventual consistency, tipos de CQRS, niveles de CQRS]
 sources:
   - Fowler, bliki "CQRS" — https://martinfowler.com/bliki/CQRS.html
   - Fowler, bliki "CommandQuerySeparation" — https://martinfowler.com/bliki/CommandQuerySeparation.html
@@ -441,6 +441,33 @@ flowchart LR
 ```
 
 Recomendación: **empezar en nivel 1** en Compras, Ventas e Inventario (handlers de consulta con SQL directo) y subir a nivel 2 solo en pantallas concretas que lo pidan (catálogo para el cliente, stock actual). Reservar el nivel 3 para Analítica, que ya es por naturaleza un modelo de lectura alimentado por eventos. Event Sourcing solo si el historial es un requisito de negocio (por ejemplo, trazabilidad de movimientos de stock), y aun así valorar si una tabla de movimientos append-only no basta.
+
+## ¿CQRS en todos los bounded contexts? Una decisión por contexto
+
+**No.** La decisión de usar CQRS, y a qué nivel, se toma **por bounded context**. Cada BC elige su arquitectura interna, y las fuentes advierten de que la mayoría no lo necesita:
+
+- CQRS Journey: *"When we say that you should apply the CQRS pattern to a portion of a system, we mean that you should implement the CQRS pattern within a bounded context."* y *"In most systems, the majority of bounded contexts will probably not benefit from using the CQRS pattern. You should only use the pattern when you can identify clear business benefits from doing so."*
+- Greg Young: *"CQRS is not a top-level architecture."* La arquitectura global (SOA/EDA, cómo se comunican los BC) es independiente de lo que haga cada BC por dentro.
+- Fowler: *"CQRS should only be used on specific portions of a system"*.
+
+```mermaid
+flowchart LR
+    subgraph Sistema["Arquitectura global: BCs + eventos de integración"]
+        ORG["Organizaciones<br/>CRUD"]
+        COM["Compras<br/>CQRS nivel 1"]
+        VEN["Ventas<br/>CQRS nivel 2"]
+        INV["Inventario<br/>CQRS nivel 1–2"]
+        ANA["Analítica<br/>solo lectura (nivel 3)"]
+    end
+    ORG -- eventos --> COM & VEN & INV
+    COM -- eventos --> ANA
+    INV -- eventos --> ANA
+```
+
+Dos matices prácticos (**opinión mía**, no de las fuentes):
+
+1. **El nivel 1 es tan barato que puede ser convención.** Separar handlers de comando y de consulta sobre las mismas tablas apenas añade coste, y es el estilo por defecto que usa Microsoft en eShopOnContainers ([Simplified CQRS](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/apply-simplified-microservice-cqrs-ddd-patterns)). Puede adoptarse como convención de código en todos los BC con lógica de negocio. Los niveles 2–4 se deciden caso a caso. En los BC CRUD (p. ej. Organizaciones) ni eso: un servicio CRUD basta.
+2. **La heterogeneidad también cuesta.** Que cada BC tenga su propio estilo multiplica la carga mental del equipo, la infraestructura (proyectores, outbox, event store) y el onboarding. Conviene limitar el "menú" a dos o tres variantes conocidas y documentadas (p. ej. CRUD, CQRS nivel 1, CQRS con proyecciones) en lugar de una por BC.
 
 ## Errores frecuentes (según las fuentes)
 
