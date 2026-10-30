@@ -3,12 +3,20 @@ title: "DDD táctico: building blocks (entidad, value object, agregado y demás)
 topic: ddd
 subtopic: diseño-táctico
 tags: [ddd, strongly-typed-id, primitive-obsession, entidad, value-object, agregado, aggregate-root, domain-service, application-service, domain-event, integration-event, outbox, repository, factory, module, invariante, consistencia]
-aliases: [entity, value object, aggregate, aggregate root, domain event, repositorio, factoría, módulo, servicio de dominio, servicio de aplicación]
+aliases: [entity, value object, aggregate, aggregate root, domain event, integration event, evento de dominio, evento de integración, strongly-typed id, typed id, identificador tipado, transactional outbox, repositorio, factoría, módulo, servicio de dominio, servicio de aplicación]
 sources:
-  - Evans, "Domain-Driven Design Reference" (2015)
-  - Vernon, "Effective Aggregate Design, Part I" (2011)
-  - Fowler, bliki "EvansClassification" y "DDD_Aggregate"
-  - Microsoft, "Using tactical DDD to design microservices" y "Design a microservice domain model"
+  - Evans, "Domain-Driven Design Reference" (2015) — https://domainlanguage.com/wp-content/uploads/2016/05/DDD_Reference_2015-03.pdf
+  - Vernon, "Effective Aggregate Design, Part I" (2011) — https://dddcommunity.org/wp-content/uploads/files/pdf_articles/Vernon_2011_1.pdf
+  - Fowler, bliki "EvansClassification" — https://www.martinfowler.com/bliki/EvansClassification.html
+  - Fowler, bliki "DDD_Aggregate" — https://www.martinfowler.com/bliki/DDD_Aggregate.html
+  - Microsoft, "Using tactical DDD to design microservices" — https://learn.microsoft.com/en-us/azure/architecture/microservices/model/tactical-ddd
+  - Microsoft, "Design a microservice domain model" — https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model
+  - Microsoft, "Domain events: design and implementation" — https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation
+  - de la Torre, "Domain Events vs. Integration Events in DDD and microservices architectures" (2017) — https://devblogs.microsoft.com/cesardelatorre/domain-events-vs-integration-events-in-domain-driven-design-and-microservices-architectures/
+  - Codeartify, "Domain Events Are Not Integration Events" — https://codeartify.substack.com/p/domain-events-are-not-integration
+  - Jovanović, "Domain Events vs Integration Events in .NET" — https://milanjovanovic.tech/blog/domain-events-vs-integration-events
+  - Lock, "Using strongly-typed entity IDs to avoid primitive obsession, Part 1" — https://andrewlock.net/using-strongly-typed-entity-ids-to-avoid-primitive-obsession-part-1
+  - Richardson, "Pattern: Transactional outbox" — https://microservices.io/patterns/data/transactional-outbox
 created: 2026-10-29
 ---
 
@@ -29,6 +37,8 @@ created: 2026-10-29
 | **Repository** | Ilusión de colección de agregados | No | — | Interfaz en dominio, implementación en infraestructura | Obtener/guardar agregados completos, uno por raíz |
 | **Factory** | Encapsula creación compleja | No | Sin estado | Dominio | Crear un agregado (o VO grande) entero y válido |
 | **Module** | Paquete/namespace del modelo | — | — | Dominio | Agrupar conceptos cohesivos con nombres del lenguaje ubicuo |
+
+> Ejemplo conductor: el agregado `Pedido` del contexto **Ventas** de un e-commerce genérico, que publica `PedidoConfirmado` hacia **Facturación**. Es el mismo ejemplo que usa [Comunicación entre bounded contexts](comunicacion-entre-bounded-contexts.md). Para el ERP marketplace real (donde el pedido es `PedidoCompra` en Compras) ver [Mapa de bounded contexts del ERP marketplace](mapa-de-contextos-erp-marketplace.md).
 
 > Dos ejes para clasificar: **identidad vs. valor** (Entidad vs. VO; Fowler: *reference objects* vs. *value objects*) y **capa** (dominio / aplicación / infraestructura, según la *Layered Architecture* de Evans).
 
@@ -178,7 +188,7 @@ class Pedido {                                   // Aggregate Root
 
 ### ¿Es el evento de integración un building block?
 
-**No en el sentido de Evans.** El *Domain Event* sí está en la DDD Reference de Evans; el *Integration Event* es una distinción que aparece en la guía de microservicios de Microsoft (eShopOnContainers) y en el blog de Cesar de la Torre (Microsoft). Es un **mecanismo de integración entre bounded contexts**, no una pieza del modelo de dominio. Por eso aquí se documenta junto al Domain Event, pero vive en otras capas.
+**No en el sentido de Evans.** El *Domain Event* sí está en la DDD Reference de Evans; el *Integration Event* es una distinción que aparece en la guía de microservicios de Microsoft (eShopOnContainers) y en el blog de Cesar de la Torre (Microsoft). Es un **mecanismo de integración entre bounded contexts**, no una pieza del modelo de dominio. Por eso aquí se documenta junto al Domain Event, pero vive en otras capas. Los patrones de relación entre contextos (Published Language, ACL, Customer/Supplier...) están en [Comunicación entre bounded contexts](comunicacion-entre-bounded-contexts.md).
 
 ### Diferencias
 
@@ -489,6 +499,11 @@ sequenceDiagram
 - **Publicar integration events antes del commit** o directamente al broker sin outbox: otros contextos reaccionan a cambios que luego se revierten, o se pierden mensajes (Microsoft, microservices.io).
 - **Exponer el domain event tal cual hacia fuera**: acopla a otros contextos con tu modelo interno; tradúcelo a un contrato de integración (práctica habitual; las fuentes citadas no lo formulan así).
 - **Consumidores no idempotentes**: el relay del outbox puede reenviar mensajes (microservices.io).
+
+## Relacionado
+
+- [Comunicación entre bounded contexts](comunicacion-entre-bounded-contexts.md): context mapping (upstream/downstream, ACL, OHS, Published Language...), REST vs. mensajería y comunicación bidireccional. Usa los mismos `Pedido`, `PedidoConfirmado` y `ventas.pedido-confirmado.v1` de esta nota.
+- [Mapa de bounded contexts del ERP marketplace](mapa-de-contextos-erp-marketplace.md): aplicación de estos building blocks y patrones al ERP (Compras, Ventas, Inventario, Cocina, Facturación).
 
 ## Fuentes
 
