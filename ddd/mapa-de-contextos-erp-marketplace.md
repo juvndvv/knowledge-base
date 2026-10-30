@@ -2,11 +2,13 @@
 title: "Mapa de bounded contexts del ERP marketplace (compras, inventario, cocina, facturas)"
 topic: ddd
 subtopic: diseño-estratégico
-tags: [ddd, bounded-context, context-map, subdominio, core-domain, generic-subdomain, supporting-subdomain, marketplace, compras, ventas, catalogo, inventario, cocina, escandallo, tpv, facturacion, facturas-recibidas, organizaciones, notificaciones]
+tags: [ddd, bounded-context, context-map, subdominio, core-domain, generic-subdomain, supporting-subdomain, marketplace, compras, ventas, catalogo, inventario, cocina, escandallo, tpv, facturacion, facturas-recibidas, organizaciones, notificaciones, catalogo-compartido, catalogo-de-compra, tarifa-por-cliente]
 aliases: [context map, mapa de contextos, bounded contexts ERP, core domain, generic subdomain, supporting subdomain, ERP restauración, B2B marketplace contexts]
 sources:
   - Evans, "Domain-Driven Design Reference" (2015) — https://domainlanguage.com/wp-content/uploads/2016/05/DDD_Reference_2015-03.pdf
   - Fowler, bliki "BoundedContext" — https://martinfowler.com/bliki/BoundedContext.html
+  - OrderCloud, "Products, pricing & ordering in marketplaces" — https://ordercloud.io/knowledge-base/products-pricing-ordering-in-marketplaces
+  - OrderCloud, "Multiple prices" — https://doc.sitecore.com/ordercloud/en/developers/platform/multiple-prices.html
   - Microsoft, "Communication in a microservice architecture" — https://learn.microsoft.com/en-us/dotnet/architecture/microservices/architect-microservice-container-applications/communication-in-microservice-architecture
 created: 2026-10-30
 ---
@@ -79,9 +81,69 @@ flowchart LR
 | Facturación → Facturas recibidas | Published Language | `FacturaEmitida` (plataforma) o e-factura por email (externos) |
 | Organizaciones → resto | Open-host Service | Identidad y políticas por organización |
 
+## Catálogo: compartido por el proveedor o gestionado por el cliente
+
+Hay dos catálogos con dueños distintos, que encajan con la polisemia de Fowler: "producto" no significa lo mismo para quien vende que para quien compra.
+
+**1. Catálogo del proveedor (lado venta).** OrderCloud lo modela así ([Products, pricing & ordering in marketplaces](https://ordercloud.io/knowledge-base/products-pricing-ordering-in-marketplaces)):
+- el proveedor es dueño de productos, catálogos y tarifas;
+- *"Suppliers can assign catalogs they own directly to buyers they have a relationship to"*;
+- el mismo producto puede tener **tarifas distintas por comprador o por grupo** ([Multiple prices](https://doc.sitecore.com/ordercloud/en/developers/platform/multiple-prices.html)).
+
+**2. Catálogo de compra del cliente (lado compra).** Es la lista de lo que *ese* cliente compra a *ese* proveedor: su referencia interna, el formato, el precio pactado y el artículo de inventario al que se vincula. Es el que usa `añadirLinea` (`ProductoComprable`). Es lo único que existe con proveedores **externos**. Este segundo catálogo es diseño mío; OrderCloud no lo cubre.
+
+Relación (propuesta mía):
+- Si el proveedor **comparte** su catálogo, cada producto compartido alimenta el catálogo de compra del cliente por eventos (`CatalogoAsignadoACliente`, `TarifaClienteCambiada`). La entrada queda con `origen = PROVEEDOR`.
+- Si el cliente lo **gestiona** él (proveedor externo, o no compartido), la entrada tiene `origen = CLIENTE` y es editable.
+- En las entradas sincronizadas, el **precio y el formato los manda el proveedor**. El cliente solo puede editar sus campos propios: referencia interna, artículo vinculado, almacén por defecto. Si negocia otro precio, eso es una **tarifa del proveedor para ese cliente** (tarifas por comprador), no una edición local. Así no hay dos verdades.
+- Cuando un externo se registra en la plataforma, sus entradas pueden **vincularse** a sus productos y pasar a `origen = PROVEEDOR`.
+
+```mermaid
+flowchart LR
+    subgraph VEN["Ventas (proveedor)"]
+        PP["Producto + Catálogo"] --> TAR["Tarifa por cliente/grupo"]
+        TAR --> AS["Asignación catálogo → cliente"]
+    end
+    subgraph COM["Compras (cliente)"]
+        CC["Catálogo de compra<br/>ProductoComprable"]
+        PED["PedidoCompra.añadirLinea"]
+    end
+    AS -- "CatalogoAsignadoACliente / TarifaClienteCambiada" --> CC
+    U["Usuario del cliente<br/>(proveedor externo o no compartido)"] -- "alta manual (origen CLIENTE)" --> CC
+    CC --> PED
+    CC -- "articuloId" --> INV["Inventario"]
+```
+
+```ts
+// Compras: una entrada del catálogo de compra del cliente
+type Origen = { tipo: "PROVEEDOR"; productoProveedorId: string; version: number } | { tipo: "CLIENTE" };
+
+class ProductoComprable extends AggregateRoot {
+  constructor(readonly id: ProductoComprableId, readonly clienteOrgId: OrgId,
+              readonly proveedorId: ProveedorId, private origen: Origen,
+              private nombre: string, private formato: FactorConversion, private precio: Dinero,
+              private referenciaInterna?: string, private articuloId?: ArticuloId) { super(); }
+
+  // Solo el proveedor (vía evento) cambia precio y formato si la entrada está sincronizada
+  aplicarTarifaProveedor(precio: Dinero, formato: FactorConversion, version: number) {
+    if (this.origen.tipo !== "PROVEEDOR") return;
+    if (version <= this.origen.version) return;            // eventos fuera de orden o repetidos
+    this.precio = precio; this.formato = formato;
+    this.origen = { ...this.origen, version };
+  }
+
+  editarPrecio(precio: Dinero) {                            // el usuario del cliente
+    if (this.origen.tipo === "PROVEEDOR") throw new PrecioGestionadoPorProveedor(this.id);
+    this.precio = precio;
+  }
+
+  vincularArticulo(articuloId: ArticuloId) { this.articuloId = articuloId; } // siempre editable
+}
+```
+
 ## Decisiones abiertas (trade-offs)
 
-- **¿Catálogo dentro de Ventas?** Si solo lo gestiona el proveedor y solo lo consume Compras, puede ser un módulo de Ventas. Lo separaría solo si tiene reglas propias (tarifas por cliente, promociones).
+- **Catálogo:** resuelto en la sección anterior. El catálogo del proveedor va dentro de **Ventas** (sus productos, catálogos y tarifas por cliente) y el catálogo de compra va dentro de **Compras**. El BC 2 desaparece como contexto propio.
 - **¿Valoración separada de Inventario?** La he dejado dentro porque el coste cambia con cada movimiento (misma consistencia). Un BC Costes aparte tendría sentido si Contabilidad necesita recalcular o cerrar periodos.
 - **¿Producción dentro de Cocina o de Inventario?** Dentro de Cocina, con varias transacciones, es más DDD. Dentro de Inventario, con una sola transacción, es más simple.
 - **Microservicios o monolito modular.** Un bounded context no obliga a un despliegue propio. Con la mayoría de relaciones asíncronas (Microsoft: *"The important rule is to not create synchronous dependencies between your microservices"*), empezar con módulos dentro de un mismo despliegue y eventos con outbox permite separar más adelante. Esto es recomendación mía.
