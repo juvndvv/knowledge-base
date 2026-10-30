@@ -3,7 +3,7 @@ title: "Comunicación entre bounded contexts: context mapping e integración"
 topic: ddd
 subtopic: diseño-estratégico
 tags: [ddd, bounded-context, context-map, context-mapping, upstream, downstream, partnership, shared-kernel, customer-supplier, conformist, anticorruption-layer, open-host-service, published-language, separate-ways, big-ball-of-mud, integracion, rest, rpc, mensajeria, evento-de-integracion, evento-de-dominio, outbox, consistencia-eventual]
-aliases: [integración entre contextos, bounded context integration, context mapping patterns, ACL, OHS, capa anticorrupción, servicio de host abierto, lenguaje publicado, integration events, domain events, transactional outbox, eventual consistency, sync vs async]
+aliases: [comunicación bidireccional, mutually dependent, dependencia mutua, dependencia cíclica, coreografía, orquestación, integración entre contextos, bounded context integration, context mapping patterns, ACL, OHS, capa anticorrupción, servicio de host abierto, lenguaje publicado, integration events, domain events, transactional outbox, eventual consistency, sync vs async]
 sources:
   - Evans, "Domain-Driven Design Reference" (2015) — https://domainlanguage.com/wp-content/uploads/2016/05/DDD_Reference_2015-03.pdf
   - Fowler, bliki "BoundedContext" — https://martinfowler.com/bliki/BoundedContext.html
@@ -12,6 +12,11 @@ sources:
   - Microsoft, "Domain events: design and implementation" — https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation
   - Jovanović, "Domain Events vs Integration Events" — https://milanjovanovic.tech/blog/domain-events-vs-integration-events
   - Richardson, "Pattern: Transactional outbox" — https://microservices.io/patterns/data/transactional-outbox
+  - INNOQ, "Domain-Driven Design in the Large" — https://www.innoq.com/en/blog/2020/07/domain-driven-design-in-the-large/
+  - Context Mapper, "Context Map" — https://contextmapper.org/docs/context-map/
+  - Three Dots Labs, "Upstream/Downstream Contexts" — https://academy.threedots.tech/knowledge/upstream-downstream-contexts
+  - Microsoft, "Choreography pattern" — https://learn.microsoft.com/en-us/azure/architecture/patterns/choreography
+  - Taibi et al., "Microservices Anti-Patterns: A Taxonomy" — https://arxiv.org/pdf/1908.04101
   - Vernon, "Implementing Domain-Driven Design", cap. 13 (índice) — https://www.oreilly.com/library/view/implementing-domain-driven-design/9780133039900/ch13lev1sec4.html
 created: 2026-10-29
 ---
@@ -189,6 +194,42 @@ Ejemplo de evento de integración como Published Language:
 | Encaja con | Consultas puntuales, OHS con API pública | Propagar cambios, réplica de datos, procesos largos |
 
 Microsoft advierte que la consistencia eventual "requires more complex code in order to detect possible inconsistencies... and the need to implement compensatory actions". ([Microsoft Learn](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation))
+
+## ¿Puede haber comunicación bidireccional entre bounded contexts?
+
+Sí, pero hay que distinguir **flujo de datos** de **dirección de dependencia**:
+
+- **Flujo de datos bidireccional sin dependencia mutua (lo normal).** En upstream/downstream la flecha "always points from the upstream to the downstream and thus expresses an influence flow" ([Context Mapper](https://contextmapper.org/docs/context-map/)), y "the downstream context depends on the upstream context, but not the other way around" ([Three Dots Labs](https://academy.threedots.tech/knowledge/upstream-downstream-contexts)). Una petición REST lleva datos en los dos sentidos (request y response), pero solo el cliente depende del contrato del servidor.
+- **Dependencia mutua.** Según INNOQ, "*mutually dependent* means that teams can only successfully deploy both bounded contexts together". Para ese caso proponen **Partnership**, a costa de una "extremely close coordination, which typically leads to considerable overhead". El otro patrón simétrico es **Shared Kernel**, que debe ser pequeño "to prevent a *mutually dependent* relationship" ([INNOQ](https://www.innoq.com/en/blog/2020/07/domain-driven-design-in-the-large/)). Context Mapper solo modela como simétricas estas dos relaciones (`[P]<->[P]`, `[SK]<->[SK]`).
+- **Riesgo técnico: ciclos.** "A cyclic chain of calls between microservices" es un anti-patrón catalogado ([Taibi et al., Microservices Anti-Patterns: A Taxonomy](https://arxiv.org/pdf/1908.04101)). En coreografía con eventos, "the system can unintentionally produce feedback loops or event storms" ([Microsoft, Choreography](https://learn.microsoft.com/en-us/azure/architecture/patterns/choreography)).
+
+### Ejemplo: Ventas ↔ Envíos
+
+Ventas publica `PedidoConfirmado` y Envíos lo consume. Envíos publica `EnvioDespachado` y Ventas lo consume para marcar el pedido como enviado. Los datos van en los dos sentidos.
+
+```mermaid
+sequenceDiagram
+    participant V as Ventas
+    participant B as Broker
+    participant E as Envíos
+    V->>B: ventas.pedido-confirmado.v1
+    B-->>E: entrega
+    E->>B: envios.envio-despachado.v1
+    B-->>V: entrega
+    Note over V,E: Cada uno consume el contrato publicado del otro.<br/>Si los dos contratos cambian al ritmo del otro, son mutuamente dependientes (Partnership).
+```
+
+Opciones para no acabar en dependencia mutua:
+
+1. **Cada contexto es upstream de su propio evento** (Published Language versionado) y el consumidor traduce con una ACL. Hay dos relaciones U→D independientes, una en cada sentido, no una relación simétrica.
+2. **Orquestador o process manager** que conozca a los dos y coordine el proceso, para que ninguno dependa del otro. Microsoft lo sugiere cuando la lógica requiere "a central component to handle shared logic" ([Microsoft, Choreography](https://learn.microsoft.com/en-us/azure/architecture/patterns/choreography)).
+3. Si de verdad tienen que desplegarse juntos, reconocerlo como **Partnership**, o plantearse si son un único bounded context mal partido. Esto último es una inferencia propia: las fuentes consultadas no lo afirman.
+
+```mermaid
+flowchart LR
+    V[Ventas] -- "U: PL pedido-confirmado<br/>D: ACL" --> E[Envíos]
+    E -- "U: PL envio-despachado<br/>D: ACL" --> V
+```
 
 ## Reglas prácticas
 
