@@ -2,7 +2,7 @@
 title: "Comunicación entre bounded contexts: context mapping e integración"
 topic: ddd
 subtopic: diseño-estratégico
-tags: [ddd, bounded-context, context-map, context-mapping, upstream, downstream, partnership, shared-kernel, customer-supplier, conformist, anticorruption-layer, open-host-service, published-language, separate-ways, big-ball-of-mud, integracion, rest, rpc, mensajeria, evento-de-integracion, evento-de-dominio, outbox, consistencia-eventual]
+tags: [ddd, php, bounded-context, context-map, context-mapping, upstream, downstream, partnership, shared-kernel, customer-supplier, conformist, anticorruption-layer, open-host-service, published-language, separate-ways, big-ball-of-mud, integracion, rest, rpc, mensajeria, evento-de-integracion, evento-de-dominio, outbox, consistencia-eventual]
 aliases: [comunicación bidireccional, mutually dependent, dependencia mutua, dependencia cíclica, coreografía, orquestación, integración entre contextos, bounded context integration, context mapping patterns, ACL, OHS, capa anticorrupción, servicio de host abierto, lenguaje publicado, integration events, domain events, transactional outbox, eventual consistency, sync vs async]
 sources:
   - Evans, "Domain-Driven Design Reference" (2015) — https://domainlanguage.com/wp-content/uploads/2016/05/DDD_Reference_2015-03.pdf
@@ -63,6 +63,8 @@ Fuente: [DDD Reference (Evans, 2015)](https://domainlanguage.com/wp-content/uplo
 
 ### Context map de ejemplo (e-commerce)
 
+Ejemplo genérico, con los mismos `Pedido` y `PedidoConfirmado` de [DDD táctico: building blocks](building-blocks-tacticos.md). No es el mapa del ERP marketplace: allí no hay un contexto Catálogo propio (ver [Mapa de bounded contexts del ERP marketplace](mapa-de-contextos-erp-marketplace.md)).
+
 ```mermaid
 flowchart LR
     subgraph Core
@@ -80,7 +82,7 @@ flowchart LR
     Pagos -- "U<br/>D: Conformist" --> Ventas
     Ventas -- "U: Customer/Supplier<br/>D: Facturación" --> Facturacion
     Legacy -- "U<br/>D: ACL" --> Facturacion
-    Ventas -. "Shared Kernel<br/>Money, Moneda" .- Facturacion
+    Ventas -. "Shared Kernel<br/>Dinero, Moneda" .- Facturacion
     RRHH ~~~ Ventas
 ```
 
@@ -101,18 +103,29 @@ flowchart LR
     ACL -->|"llamada SOAP/REST"| ERP
 ```
 
-```ts
+```php
+<?php
 // Puerto definido en el dominio de Facturación
-interface ClienteFacturable { id: ClienteId; razonSocial: string; nif: Nif; }
-interface ClientesFacturables { porId(id: ClienteId): Promise<ClienteFacturable>; }
+final readonly class ClienteFacturable
+{
+    public function __construct(public ClienteId $id, public string $razonSocial, public Nif $nif) {}
+}
+
+interface ClientesFacturables
+{
+    public function porId(ClienteId $id): ClienteFacturable;
+}
 
 // ACL: traduce el modelo del ERP al lenguaje de Facturación
-class ClientesFacturablesDesdeErp implements ClientesFacturables {
-  constructor(private erp: ErpClient) {}
-  async porId(id: ClienteId) {
-    const raw = await this.erp.getCustomer(id.value); // { KUNNR, NAME1, STCD1 }
-    return { id, razonSocial: raw.NAME1.trim(), nif: Nif.parse(raw.STCD1) };
-  }
+final class ClientesFacturablesDesdeErp implements ClientesFacturables
+{
+    public function __construct(private ErpClient $erp) {}
+
+    public function porId(ClienteId $id): ClienteFacturable
+    {
+        $raw = $this->erp->getCustomer($id->valor);   // ['KUNNR' => ..., 'NAME1' => ..., 'STCD1' => ...]
+        return new ClienteFacturable($id, trim($raw['NAME1']), Nif::parse($raw['STCD1']));
+    }
 }
 ```
 
@@ -139,13 +152,13 @@ Microsoft desaconseja encadenar llamadas síncronas entre servicios: "If possibl
 
 Con AMQP y similares, el emisor "usually doesn't wait for a response". La comunicación con varios receptores (pub/sub) "must be asynchronous". ([Microsoft Learn](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/architect-microservice-container-applications/communication-in-microservice-architecture))
 
-**Evento de dominio vs. evento de integración** ([Microsoft Learn](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation), [Milan Jovanović](https://milanjovanovic.tech/blog/domain-events-vs-integration-events)):
+**Evento de dominio vs. evento de integración** (resumen; el detalle con código, outbox y relay está en [building blocks §4](building-blocks-tacticos.md#4-domain-event-y-integration-event)) ([Microsoft Learn](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/domain-events-design-implementation), [Milan Jovanović](https://milanjovanovic.tech/blog/domain-events-vs-integration-events)):
 
 | | Evento de dominio | Evento de integración |
 |---|---|---|
 | Alcance | Dentro del BC | Cruza BCs |
 | Transporte | En memoria (p. ej. MediatR) | Broker (RabbitMQ, Azure Service Bus, SQS...) |
-| Momento | Antes o durante el commit | Solo tras persistir con éxito |
+| Momento | Se despacha antes o después del commit (decisión de diseño) | Solo tras persistir con éxito |
 | Sincronía | Síncrono o asíncrono | "should always be asynchronous" |
 | Contrato | Interno, puede usar tipos del dominio | Público: mínimo, tipos primitivos, versionado |
 
@@ -171,15 +184,16 @@ sequenceDiagram
     Note over Env,Fac: Consumidores idempotentes + reintentos.<br/>Consistencia eventual.
 ```
 
-Ejemplo de evento de integración como Published Language:
+Ejemplo de evento de integración como Published Language (mismo contrato que `PedidoConfirmadoIntegrationEvent` en [building blocks](building-blocks-tacticos.md); la versión va en el `type`):
 
 ```json
 {
-  "type": "ventas.pedido-confirmado",
-  "version": 1,
   "eventId": "3f1c...",
+  "type": "ventas.pedido-confirmado.v1",
   "occurredAt": "2026-10-29T18:30:00Z",
-  "data": { "pedidoId": "P-1001", "clienteId": "C-77", "total": { "amount": "59.90", "currency": "EUR" } }
+  "pedidoId": "P-1001",
+  "clienteId": "C-77",
+  "total": { "cantidad": 59.90, "moneda": "EUR" }
 }
 ```
 
@@ -241,4 +255,5 @@ flowchart LR
 
 ## Relacionado
 
-- [DDD táctico: building blocks](building-blocks-tacticos.md) (eventos de dominio, agregados)
+- [DDD táctico: building blocks](building-blocks-tacticos.md): agregados, strongly-typed IDs, domain events vs. integration events, outbox.
+- [Mapa de bounded contexts del ERP marketplace](mapa-de-contextos-erp-marketplace.md): estos patrones aplicados al ERP, incluidas las relaciones bidireccionales Compras ↔ Ventas y Cocina ↔ Inventario.
