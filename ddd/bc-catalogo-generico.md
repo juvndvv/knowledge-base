@@ -2,8 +2,8 @@
 title: "Bounded context de Catálogo genérico: qué puede ser genérico y qué no"
 topic: ddd
 subtopic: diseño-estratégico
-tags: [ddd, bounded-context, catalogo, catalog, producto, generic-subdomain, supporting-subdomain, core-domain, pim, eav, type-object, familia, atributos, variantes, jsonb, published-language, acl, inner-platform-effect, marketplace, hosteleria, gs1, gtin]
-aliases: [catalog bounded context, generic catalog, catálogo genérico, catálogo reutilizable, product catalog, product information management, PIM, entity attribute value, EAV antipattern, inner-platform effect, type object pattern, product family, product variant, variant axis, ejes de variante, atributos dinámicos, catálogo que vale para todo, modelo único de producto, polisemia producto]
+tags: [ddd, bounded-context, catalogo, catalog, producto, generic-subdomain, supporting-subdomain, core-domain, pim, eav, type-object, familia, atributos, variantes, jsonb, published-language, acl, inner-platform-effect, marketplace, hosteleria, gs1, gtin, construccion, obras, base-de-precios, fiebdc, bc3, unidad-de-obra, precio-descompuesto]
+aliases: [catalog bounded context, generic catalog, catálogo genérico, catálogo reutilizable, product catalog, product information management, PIM, entity attribute value, EAV antipattern, inner-platform effect, type object pattern, product family, product variant, variant axis, ejes de variante, atributos dinámicos, catálogo que vale para todo, modelo único de producto, polisemia producto, ERP de obras, ERP construcción, base de precios, BEDEC, BPGV, FIEBDC-3, BC3, precio descompuesto, unidad de obra, partida]
 sources:
   - Evans, "Domain-Driven Design Reference" (2015), patrones Generic Subdomains y Segregated Core — https://domainlanguage.com/wp-content/uploads/2016/05/DDD_Reference_2015-03.pdf
   - Fowler, bliki "BoundedContext" — https://martinfowler.com/bliki/BoundedContext.html
@@ -14,6 +14,9 @@ sources:
   - Akeneo PIM, "Manage your families" — https://help.akeneo.com/pim/v6/articles/manage-your-families.html
   - Sylius, "Products" y "Attributes" — https://docs.sylius.com/the-book/products/products , https://docs.sylius.com/the-book/products/attributes
   - PostgreSQL, "JSON Types" — https://www.postgresql.org/docs/current/datatype-json.html
+  - Gobierno Vasco, manual de la Base de Precios de la Construcción — https://www.euskadi.eus/contenidos/informacion/bases_de_datos/eu_doc/adjuntos/Base%20precios%20edificaci%C3%B3n%20manual.pdf
+  - OneEstimate, "Precios unitarios de construcción en España" — https://oneestimate.ai/es/blog/precios-unitarios-construccion-espana-itec-bases-datos
+  - Cegid, "Qué es el formato BC3" — https://www.cegid.com/ib/es/blog/que-es-formato-bc3/
   - GS1 Sweden, "Food service" — https://gs1.se/en/your-industry/food-service/
 created: 2026-11-03
 ---
@@ -407,6 +410,88 @@ Lista de comprobación (mía, basada en las fuentes anteriores):
 4. Ventas, Compras o Cocina hacen `JOIN` directo a tablas del Catálogo → no hay ACL, cualquier cambio rompe a todos.
 5. Para dar de alta un producto de un proveedor externo hay que crear una ficha completa en el Catálogo → el catálogo central bloquea el core.
 6. El equipo dedica más tiempo al motor de atributos que a Compras o Cocina → Evans: al genérico hay que darle *"lower priority than the core domain"*.
+
+## ¿Vale para cualquier ERP? Ejemplo: construcción (obras)
+
+Los **principios** valen para cualquier ERP, porque no dependen del sector: polisemia de "producto" (Fowler), genérico pequeño y sin especialidades (Evans), lista cerrada de tipos frente al inner-platform effect. Lo que **no** se puede reutilizar tal cual es el **contenido** del catálogo, porque lo que es genérico y lo que es core cambia con el negocio.
+
+En obra, el "catálogo" suele ser una **base de precios**. La Base de Precios de la Construcción de Euskadi la describe así ([manual BPGV](https://www.euskadi.eus/contenidos/informacion/bases_de_datos/eu_doc/adjuntos/Base%20precios%20edificaci%C3%B3n%20manual.pdf)):
+- conceptos *"se estructuran de forma jerárquica en varios niveles"* (área, capítulo, subcapítulo, familia);
+- **precio simple**: *"precios de productos, materiales, mano de obra"*;
+- **unidad de obra**: *"precios directos o paramétricos que tienen descomposición"*, cada componente *"con la cantidad (rendimiento) con que intervienen"*.
+
+Se intercambia con el estándar español **FIEBDC** (formato BC3), que exportan herramientas como CYPE o Presto ([OneEstimate](https://oneestimate.ai/es/blog/precios-unitarios-construccion-espana-itec-bases-datos), [Cegid](https://www.cegid.com/ib/es/blog/que-es-formato-bc3/)).
+
+Comparación (análisis mío):
+
+| Aspecto | Marketplace hostelería | ERP de obras |
+|---|---|---|
+| Qué es "el catálogo" | Fichas de producto del proveedor | Base de precios: precios simples y unidades de obra |
+| ¿El precio está en el catálogo? | No: depende del cliente → Ventas | Sí, como **precio de referencia** de la base; el precio real va en el presupuesto de cada obra |
+| Composición | Receta (Cocina): ingrediente × gramaje | Unidad de obra descompuesta: material/mano de obra/maquinaria × rendimiento |
+| Qué es core | Compras, Inventario, Cocina | Presupuesto, mediciones, certificaciones, control de costes de obra |
+| Estándar de intercambio | GS1 (GTIN, GDSN) | FIEBDC / BC3 |
+| Genérico comprable | PIM, fichas GS1 | Bases de precios (BEDEC, BPGV, CYPE) importadas en BC3 |
+
+La unidad de obra descompuesta se parece mucho a un escandallo (`costes-escandallos-produccion-pmp-fifo.md`): composición con rendimientos que da un coste. Igual que la receta no va en el Catálogo sino en Cocina, la **descomposición que el usuario ajusta para su obra** pertenece al contexto de Presupuestos, que es core. La base de precios importada es dato de referencia: un contexto genérico, upstream, que se alimenta de BC3 a través de una ACL.
+
+```mermaid
+flowchart LR
+    BC3[("Base de precios externa<br/>BEDEC / BPGV en BC3")] -- "importación (ACL)" --> REF["Referencia de precios<br/>(genérico)<br/>precios simples + unidades de obra"]
+    REF -- "copia al presupuestar<br/>(snapshot de precio y descompuesto)" --> PRE["Presupuestos<br/>(core)<br/>partidas, mediciones, descompuestos propios"]
+    PRE -- "PresupuestoAprobado" --> COS["Control de costes de obra"]
+    MAT["Catálogo de materiales<br/>(ficha descriptiva, opcional)"] -. "materialId" .-> REF
+    MAT -. "materialId" .-> COMP["Compras de obra"]
+```
+
+```php
+<?php
+declare(strict_types=1);
+
+namespace Presupuestos\Dominio;
+
+// La partida copia precio y descomposición en el momento de presupuestar,
+// igual que LineaPedido copia el precio en Compras. Si la base de precios
+// se actualiza, los presupuestos ya hechos no cambian.
+final readonly class LineaDescompuesta
+{
+    public function __construct(
+        public string $conceptoRef,      // código de la base (p. ej. de un BC3)
+        public TipoRecurso $tipo,        // Material | ManoDeObra | Maquinaria
+        public Cantidad $rendimiento,    // 0,25 h de oficial por m²
+        public Dinero $precioUnitario,
+    ) {}
+}
+
+final class Partida
+{
+    /** @param list<LineaDescompuesta> $descompuesto */
+    public function __construct(
+        public readonly PartidaId $id,
+        private string $codigoBase,      // de dónde viene en la base de precios
+        private Unidad $unidad,          // m², m³, ud
+        private array $descompuesto,
+        private Cantidad $medicion,
+    ) {}
+
+    public function precioUnitario(): Dinero
+    {
+        return array_reduce(
+            $this->descompuesto,
+            fn (Dinero $acc, LineaDescompuesta $l) =>
+                $acc->sumar($l->precioUnitario->multiplicar($l->rendimiento->valor)),
+            Dinero::cero('EUR'),
+        );
+    }
+
+    public function ajustarRendimiento(string $conceptoRef, Cantidad $nuevo): void
+    {
+        // regla de negocio propia del presupuestador: aquí vive el core
+    }
+}
+```
+
+Conclusión: se reutiliza el **patrón** (ficha descriptiva pequeña, atributos tipados, ACL, eventos, copia del precio en el documento), no el **BC**. Un "Catálogo para cualquier ERP" solo tendría sentido si el producto que vendes es un PIM; si no, en cada ERP el catálogo se recorta a lo que ese negocio tiene de genérico.
 
 ## Recomendación para el ERP marketplace
 
