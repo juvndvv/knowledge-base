@@ -2,8 +2,8 @@
 title: "Cómo documentar un bounded context: para implementarlo y para que dure"
 topic: ddd
 subtopic: diseño-estratégico
-tags: [ddd, bounded-context, documentacion, bounded-context-canvas, ddd-crew, lenguaje-ubicuo, glosario, context-map, adr, architecture-decision-record, c4, living-documentation, documentacion-viva, asyncapi, contratos, eventos, deptrac, fitness-function, readme, domain-vision-statement, catalogo, marketplace, hosteleria, php]
-aliases: [documentar un BC, documentar bounded context, documentation of a bounded context, bounded context canvas, BC canvas, canvas de contexto, ADR, architecture decision record, registro de decisiones de arquitectura, living documentation, documentación viva, living glossary, glosario vivo, ubiquitous language glossary, glosario del lenguaje ubicuo, domain vision statement, declaración de visión del dominio, C4 model, diagrama de contenedores, AsyncAPI, contrato de eventos, published language documentado, Contextive, Deptrac, reglas de dependencia, arquitectura ejecutable, docs as code, documentación que se pudre, documentation rot]
+tags: [ddd, bounded-context, documentacion, bounded-context-canvas, ddd-crew, lenguaje-ubicuo, glosario, context-map, adr, architecture-decision-record, c4, living-documentation, documentacion-viva, asyncapi, contratos, eventos, deptrac, fitness-function, readme, domain-vision-statement, catalogo, catalogo-del-cliente, producto-comprable, articulo, marketplace, hosteleria, php]
+aliases: [documentar un BC, documentar bounded context, documentation of a bounded context, bounded context canvas, BC canvas, canvas de contexto, ADR, architecture decision record, registro de decisiones de arquitectura, living documentation, documentación viva, living glossary, glosario vivo, ubiquitous language glossary, glosario del lenguaje ubicuo, domain vision statement, declaración de visión del dominio, C4 model, diagrama de contenedores, AsyncAPI, contrato de eventos, published language documentado, Contextive, Deptrac, reglas de dependencia, arquitectura ejecutable, docs as code, documentación que se pudre, documentation rot, catálogo del cliente, catálogo de compra, mi catálogo, artículo de inventario]
 sources:
   - DDD Crew, "The Bounded Context Canvas" (v5) — https://github.com/ddd-crew/bounded-context-canvas
   - Evans, "Domain-Driven Design Reference" (2015), patrones Bounded Context, Context Map, Ubiquitous Language, Domain Vision Statement, Highlighted Core — https://domainlanguage.com/wp-content/uploads/2016/05/DDD_Reference_2015-03.pdf
@@ -120,7 +120,7 @@ Relleno con lo decidido en `bc-catalogo-generico.md` (los supuestos, métricas y
 | **Outbound** | Eventos `ProductoPublicado`, `FichaProductoActualizada`, `ProductoDescatalogado` hacia Ventas, Compras y Cocina (OHS + Published Language). |
 | **Ubiquitous Language** | Producto, Familia, Atributo, Variante, Eje de variante, Ficha publicada, Descatalogar. |
 | **Business Decisions** | Solo se publica si la familia da por completos sus atributos obligatorios. Un producto descatalogado no se borra. El GTIN es único por variante. |
-| **Assumptions** | Los proveedores mantienen sus propias fichas. Los externos sin cuenta no necesitan ficha (viven en Compras). |
+| **Assumptions** | Los proveedores mantienen sus propias fichas. Los externos sin cuenta no necesitan ficha: sus productos viven como `ProductoComprable` en Compras. El catálogo del cliente no es este BC (ver la sección siguiente). |
 | **Verification Metrics** | Nº de cambios que obligan a tocar Catálogo **y** otro BC en el mismo PR; nº de atributos "regla" pedidos por negocio (señal de inner-platform). |
 | **Open Questions** | ¿Importar fichas de un pool GS1/GDSN? ¿Quién corrige un alérgeno mal puesto: proveedor o plataforma? |
 
@@ -145,6 +145,57 @@ flowchart LR
     PROV -- "DescatalogarProducto" --> CAT
     CAT -- "ProductoDescatalogado" --> COM
 ```
+
+## El catálogo del cliente: otro modelo, no el mismo BC
+
+El ejemplo anterior solo cubre el catálogo **del proveedor** (lo que vende). En el ERP el cliente también tiene "su catálogo": los productos que compra y con los que mide su stock. Es la misma palabra para **dos (en realidad tres) modelos distintos**, que es la polisemia de "Product" que señala Fowler (*"Time and time again I see this confusion recur with polysemes like "Customer" and "Product""*, [BoundedContext](https://martinfowler.com/bliki/BoundedContext.html)).
+
+Separando lo que hoy se llama "catálogo del cliente" (propuesta mía, coherente con `mapa-de-contextos-erp-marketplace.md` y `unidades-de-medida-compra-stock-cocina.md`):
+
+| Lo que el cliente llama "mi catálogo" | Pregunta que responde | Modelo | BC |
+|---|---|---|---|
+| Lo que puedo pedir a cada proveedor | ¿A quién lo compro, en qué formato y a qué precio? | `ProductoComprable` (uno **por proveedor**, origen PROVEEDOR o CLIENTE) | Compras |
+| Lo que tengo en el almacén y cuento | ¿Cuánto me queda, en qué unidad, cuánto vale? | `Articulo` (unidad de stock, equivalencias, PMP/FIFO) | Inventario |
+| Lo que el proveedor describe | ¿Qué es este producto (GTIN, alérgenos)? | `Producto` | Catálogo (del proveedor) |
+
+Por qué no juntar los dos primeros en un único "catálogo del cliente":
+
+- **La cardinalidad es distinta.** El cliente compra aceite de oliva a dos proveedores (garrafa de 5 l y caja de 6 botellas de 1 l), pero en el almacén cuenta **un** artículo "aceite de oliva" en litros. Son dos `ProductoComprable` apuntando a un `Articulo`.
+- **El stock se mide sobre lo que se cuenta, no sobre lo que se compra.** Si el stock colgara del producto comprado, cambiar de proveedor rompería el histórico de existencias y el coste medio.
+- **Hay artículos que no se compran**: elaboraciones propias (fondo, salsa base) que salen de producción en Cocina. Tienen stock pero ningún proveedor.
+- **Hay productos comprables que no se inventarían** (servicios, material que se imputa a gasto): `articuloId` es opcional.
+
+```mermaid
+flowchart LR
+    subgraph CAT["Catálogo (proveedor)"]
+        P1["Producto: AOVE garrafa 5 l<br/>(Proveedor A)"]
+        P2["Producto: AOVE caja 6×1 l<br/>(Proveedor B)"]
+    end
+    subgraph COM["Compras (cliente)"]
+        PC1["ProductoComprable<br/>Prov. A · garrafa · 5 l/ud"]
+        PC2["ProductoComprable<br/>Prov. B · caja · 6 l/ud"]
+        PC3["ProductoComprable<br/>Externo C (email) · origen CLIENTE"]
+    end
+    subgraph INV["Inventario (cliente)"]
+        A1["Artículo: Aceite de oliva<br/>unidad stock: l · PMP"]
+        A2["Artículo: Fondo oscuro<br/>(elaboración propia)"]
+    end
+    COC["Cocina: producción"]
+    P1 -. "CatalogoAsignadoACliente" .-> PC1
+    P2 -. "CatalogoAsignadoACliente" .-> PC2
+    PC1 -- "articuloId" --> A1
+    PC2 -- "articuloId" --> A1
+    PC3 -- "articuloId" --> A1
+    COC -- "ProduccionRegistrada" --> A2
+```
+
+Cómo se refleja en la documentación:
+
+1. **README de Compras y de Inventario**, cada uno con su "qué NO hace": Compras no guarda stock; Inventario no gestiona proveedores ni precios pactados (de cada recepción solo le importan cantidad en unidad de stock y coste).
+2. **Glosario por BC** con la misma palabra definida dos veces (ver la sección del glosario): en Compras "producto" es alias de *Producto comprable*; en Inventario el término es *Artículo* y "producto" **no** se usa.
+3. **ADR** que fija la decisión: *"El stock se lleva por Artículo, no por ProductoComprable"*, con la consecuencia negativa explícita (el usuario tiene que vincular cada producto comprable a un artículo, al menos la primera vez).
+
+Si en la UI el cliente ve una sola pantalla "Mi catálogo" con ambas cosas, es una **vista** (read model que compone Compras e Inventario), no un BC. Ver `cqrs/cqrs-que-es-cuando-y-niveles-de-separacion.md`.
 
 ## Qué queda en el repositorio: estructura propuesta
 
@@ -247,6 +298,22 @@ contexts:
       - name: Producto comprable
         definition: Lo que un cliente puede pedir a un proveedor (de la plataforma o externo), con su referencia y precio pactado.
         aliases: [producto]
+        examples:
+          - "El aceite se lo pedimos a Aceites Sur en garrafa y a Distribuciones Norte en caja de seis."
+```
+
+```yaml
+# src/Inventario/docs/glosario.yml
+contexts:
+  - name: Inventario
+    domainVisionStatement: Saber cuánto tiene cada cliente de cada cosa que cuenta y cuánto vale.
+    terms:
+      - name: Artículo
+        definition: Lo que el cliente cuenta en su almacén, en una unidad de stock. Puede alimentarse de varios productos comprables o de producción propia.
+        examples:
+          - "Del aceite de oliva quedan 12 litros, venga de la garrafa o de las botellas."
+      - name: Unidad de stock
+        definition: Unidad en la que se cuenta y valora un artículo (l, kg, botella).
 ```
 
 Los `examples` deben ser **frases reales** de los expertos (cocineros, jefes de compras), como recomienda la guía de Contextive. Son lo que más ayuda a distinguir significados entre contextos.
