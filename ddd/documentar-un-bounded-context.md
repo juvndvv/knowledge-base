@@ -197,6 +197,42 @@ Cómo se refleja en la documentación:
 
 Si en la UI el cliente ve una sola pantalla "Mi catálogo" con ambas cosas, es una **vista** (read model que compone Compras e Inventario), no un BC. Ver `cqrs/cqrs-que-es-cuando-y-niveles-de-separacion.md`.
 
+## El eje del cliente es el Artículo, no un "catálogo central"
+
+Pregunta que surge: si lo que el cliente compra se usa en recetas, se revende en sala (TPV) y se vende a otras empresas por el marketplace, ¿el punto central es "el catálogo"?
+
+Mi respuesta (opinión, apoyada en Fowler y en cómo lo resuelven herramientas de hostelería): el punto central es el **Artículo de Inventario**, y es central **solo como identidad que todos referencian**, no como dueño de todos los datos. Cada contexto guarda su propia información y apunta a `articuloId`.
+
+- **Entradas de stock**: recepciones de compra (varios `ProductoComprable` → un artículo) y producción propia (Cocina).
+- **Salidas de stock**: consumo por recetas, venta en sala y venta B2B.
+- **Venta en sala**: cada producto de la carta tiene escandallo; la reventa tal cual es un escandallo de una línea (1 × artículo). WISK lo modela igual: a cada artículo del TPV se le añaden los ingredientes *"used every time the item is sold"*, que pueden ser artículos o elaboraciones (*batches*) con su cantidad por venta ([WISK](https://help.wisk.ai/en/articles/5905918)).
+- **Venta B2B**: el cliente actúa como proveedor en Ventas; su oferta apunta a su artículo y la entrega descuenta stock.
+
+```mermaid
+flowchart LR
+    subgraph ENTRADAS["Entradas"]
+        PC1["Compras: ProductoComprable<br/>Prov. A garrafa 5 l"]
+        PC2["Compras: ProductoComprable<br/>Prov. B caja 6×1 l"]
+        PROD["Cocina: elaboración<br/>(producción propia)"]
+    end
+    A(("Inventario<br/>Artículo: aceite (l)<br/>stock + PMP"))
+    subgraph SALIDAS["Salidas"]
+        REC["Cocina: receta<br/>30 ml por ración"]
+        TPV["Carta / TPV<br/>escandallo (reventa = 1 línea)"]
+        B2B["Ventas: oferta B2B<br/>a otros locales"]
+    end
+    PC1 -- "MercanciaRecibida" --> A
+    PC2 -- "MercanciaRecibida" --> A
+    PROD -- "ProduccionRegistrada" --> A
+    A -- "ConsumoRegistrado" --> REC
+    A -- "VentaRegistrada → escandallo" --> TPV
+    A -- "PedidoVentaEntregado" --> B2B
+```
+
+Lo que **no** conviene: un "Catálogo central" con precio de compra, precio de venta, receta, stock y coste en la misma entidad. Es el modelo único que Fowler desaconseja para polisemas como "Product" ([BoundedContext](https://martinfowler.com/bliki/BoundedContext.html)): cada cambio en la carta obligaría a tocar el modelo de compras y viceversa.
+
+Si en la UI se quiere llamar "Mi catálogo" a la lista de artículos, es una decisión de nombre; lo importante es que el `Articulo` solo tenga identidad, unidad de stock, equivalencias y valoración. Precio de compra en Compras, precio de venta en la carta o en Ventas, receta en Cocina. Esto se documenta en el README de Inventario ("qué NO hace") y en un ADR.
+
 ## Qué queda en el repositorio: estructura propuesta
 
 Nygard propone guardar las decisiones *"in the project repository under doc/arch/adr-NNN.md"*. Aplico la misma idea a todo el paquete del BC: vive **junto al código del contexto**, se revisa en el mismo PR que el código y se pudre menos porque el revisor lo ve.
