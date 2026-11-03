@@ -26,7 +26,7 @@ Pregunta de partida: *¿cómo se debe documentar un BC, tanto para implementarlo
 
 Ejemplo de toda la nota: el **BC Catálogo descriptivo** de `bc-catalogo-generico.md`, dentro del ERP marketplace de hostelería de `mapa-de-contextos-erp-marketplace.md`. Los patrones de relación entre contextos están en `comunicacion-entre-bounded-contexts.md`.
 
-La documentación completa de tres contextos siguiendo este método está en `erp-bc-catalogo.md`, `erp-bc-ventas.md` y `erp-bc-compras.md`.
+La documentación completa de varios contextos siguiendo este método está en `erp-bc-catalogo.md`, `erp-bc-ventas.md`, `erp-bc-compras.md`, `erp-bc-facturacion.md` y `erp-bc-cuentas-a-pagar.md`.
 
 ## Respuesta corta: dos momentos, artefactos distintos
 
