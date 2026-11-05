@@ -128,6 +128,8 @@ contexts:
 | `Local` | `sociedadId`, nombre, dirección, zona horaria, **territorio fiscal** (si difiere), ids de almacén | Pertenece a una sociedad del mismo grupo; no se cierra con almacenes con stock (lo confirma Inventario) |
 | `Usuario` | Email, preferencias, asignaciones (rol + ámbito) | Un ámbito siempre dentro de su grupo |
 
+> **Actualización 2026-11-05** (decisión de ir "como Odoo", ver `erp-bc-fiscalidad.md`): el enum `TerritorioFiscal` de abajo se sustituye por **país (ISO 3166-1) + subdivisión (ISO 3166-2 o municipio)** en `Sociedad` y `Local`, y la sociedad guarda su **localización fiscal** (`es`, `co`…). Canarias deja de ser un valor especial: es una subdivisión que la posición fiscal "Canarias" de `l10n_es` detecta. El código de abajo queda como versión anterior (ADR 0002 *superseded* por ADR 0006).
+
 **Territorio fiscal en sociedad y en local.** El impuesto indirecto depende del territorio: IVA en *"Península + Baleares"*, IGIC en Canarias, IPSI en Ceuta y Melilla ([GuíaFiscal](https://guiafiscal.es/comparativas/iva-vs-igic-vs-ipsi/)). Un grupo con un local en Tenerife necesita que ese dato esté en Organizaciones para que Fiscalidad elija bien. Qué tipo aplica en cada caso no es de Organizaciones: es de Fiscalidad.
 
 ```php
@@ -240,9 +242,10 @@ final class OrganizacionesTest extends TestCase
 | 0003 | Unidades físicas, `Dinero` y `Distribucion` en un shared kernel pequeño | Cambiarlo exige acuerdo de todos los equipos |
 | 0004 | Autenticación delegada en un proveedor de identidad; Organizaciones solo autoriza (roles y ámbitos) | Dependencia de un tercero |
 | 0005 | Los demás BCs replican de Organizaciones solo lo que necesitan; la única consulta síncrona es `PuedeHacer` | Réplicas que se actualizan por eventos |
+| 0006 | País + subdivisión + localización fiscal en lugar de `TerritorioFiscal` (sustituye a 0002) | Hay que mantener listas ISO de subdivisiones y municipios por país |
 
 ## Preguntas abiertas del BC Organizaciones
 
 1. ¿Los proveedores del marketplace son también "grupos" con sociedades, o una estructura más simple? (Mismo modelo parece lo más genérico.)
 2. ¿Permisos por rol fijo o roles configurables por grupo? Configurables es más genérico, pero acerca al *inner-platform effect*.
-3. ¿Se vende fuera de España? Si sí, territorio fiscal y moneda necesitan más valores y Fiscalidad crece mucho.
+3. ¿Se vende fuera de España? Con el modelo de localizaciones (ADR 0006) el país es un dato; la moneda sí necesitaría tipos de cambio si una sociedad opera en varias.

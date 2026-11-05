@@ -179,6 +179,26 @@ stateDiagram-v2
     Emitida --> Emitida: solo se le añaden rectificativas que la referencian
 ```
 
+## Facturación en varios países (localizaciones)
+
+Tras la decisión de modelar la fiscalidad "como Odoo" (`erp-bc-fiscalidad.md`), Facturación no conoce ningún país:
+
+- Las **líneas de impuesto** (incluidas retenciones, que son impuestos negativos) las calcula Fiscalidad y Facturación las **copia** en la factura.
+- La **numeración, el contenido obligatorio y el envío** a la administración dependen del país. Lo aporta un adaptador de la localización detrás de un puerto `EmisionLegal`: en España, VeriFactu (y factura electrónica B2B); en Colombia, factura electrónica DIAN con UBL 2.1 y CUFE ([Ecosire](https://ecosire.com/blog/odoo-colombia-localization-guide-2026)).
+- Las reglas de este documento sobre series y rectificativas son las de **España** (RD 1619/2012); la localización de otro país puede imponer las suyas.
+
+```php
+<?php
+namespace Facturacion\Dominio;
+
+/** Puerto: lo implementa cada localización fiscal */
+interface EmisionLegal
+{
+    public function validarAntesDeEmitir(Factura $factura): void;   // contenido obligatorio del país
+    public function registrar(FacturaEmitida $factura): RegistroLegal; // VeriFactu, DIAN…
+}
+```
+
 ## Contrato público del BC Facturación
 
 | Mensaje | Cuándo | Payload mínimo | Destino |
@@ -213,7 +233,7 @@ final class FacturaTest extends TestCase
 |---|---|---|
 | 0001 | Facturación y Cuentas a pagar son BCs distintos | Un mismo documento legal existe en dos modelos; se enlazan por `facturaId` |
 | 0002 | La factura emitida es inmutable; las correcciones son rectificativas en serie propia | Errores frecuentes en Ventas se convierten en muchas rectificativas |
-| 0003 | VeriFactu y e-factura se delegan en un proveedor externo detrás de puertos | Dependencia y coste de un tercero; hay que vigilar su certificación |
+| 0003 | VeriFactu y e-factura se delegan en un proveedor externo detrás de puertos; el adaptador lo aporta la **localización fiscal** de la sociedad emisora (`l10n_es`: VeriFactu; `l10n_co`: DIAN), ver `erp-bc-fiscalidad.md` | Dependencia y coste de un tercero; hay que vigilar su certificación |
 | 0004 | Emitir modifica `SerieFacturacion` y `Factura` en la misma transacción | Excepción a "un agregado por transacción"; la serie se bloquea durante la emisión |
 | 0005 | Datos fiscales de emisor y destinatario se copian en la factura | Si el cliente cambia de domicilio, las facturas antiguas conservan el viejo (correcto legalmente) |
 

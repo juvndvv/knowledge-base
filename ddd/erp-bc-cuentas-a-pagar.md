@@ -155,6 +155,14 @@ stateDiagram-v2
 
 Una factura retenida por "falta recepción" se **re-coteja** sola cuando llega `MercanciaRecibida` de ese pedido; no hace falta que nadie la toque.
 
+## Retenciones e impuestos no descontables (multipaís)
+
+Con la fiscalidad "como Odoo" (`erp-bc-fiscalidad.md`), una factura recibida puede traer:
+
+- **Retenciones** (impuestos negativos), por ejemplo ReteIVA o ReteFuente en Colombia. Odoo: *"A withholding tax, also known as retention tax, mandates the payer of a customer invoice to deduct a tax from the payment"* ([Odoo](https://www.odoo.com/documentation/19.0/applications/finance/accounting/taxes/retention.html)). Cuentas a pagar marca como **importe a pagar** el total menos retenciones, y publica la retención para que Contabilidad/Tesorería la declare y emita el certificado.
+- **Impuestos no descontables** (INC en Colombia: *"no permite descontar impuestos pagados en las compras"*, [Siigo](https://www.siigo.com/blog/obligaciones-fiscales/impuesto-al-consumo-e-impuesto-sobre-las-ventas-son-lo-mismo/)). `FacturaConformada` los envía por línea para que Inventario los sume al **coste** del artículo.
+- El **cotejo** compara también las cuotas con las que calcula Fiscalidad para el pedido; una diferencia de impuesto es motivo de retención de la factura.
+
 ## Contrato público del BC Cuentas a pagar
 
 **Publica:**
